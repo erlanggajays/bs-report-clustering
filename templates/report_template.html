@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BrowserStack Test Analytics — {{ build.name }}</title>
+  <script>{{ plotly_js | safe }}</script>
+  <style>
+    :root {
+      --bg: #f4f6fb; --card: #ffffff; --ink: #1f2933; --muted: #6b7280;
+      --line: #e5e7eb; --brand: #2563eb; --good: #16a34a; --bad: #dc2626;
+      --warn: #ea580c; --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--ink);
+      font-family: Inter, system-ui, -apple-system, Segoe UI, sans-serif;
+      line-height: 1.5;
+    }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 32px 24px 64px; }
+    header { display: flex; justify-content: space-between; align-items: flex-end;
+      flex-wrap: wrap; gap: 12px; margin-bottom: 28px; }
+    header h1 { font-size: 22px; margin: 0; }
+    header .sub { color: var(--muted); font-size: 14px; margin-top: 4px; }
+    .pill { background: #eef2ff; color: var(--brand); padding: 4px 12px;
+      border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .grid { display: grid; gap: 18px; }
+    .cards { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+    .card { background: var(--card); border: 1px solid var(--line);
+      border-radius: var(--radius); padding: 18px 20px; }
+    .card .k { font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+      color: var(--muted); font-weight: 600; }
+    .card .v { font-size: 30px; font-weight: 700; margin-top: 6px; }
+    .card .v.small { font-size: 22px; }
+    .card .note { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    /* Info marker + hover tooltip on summary cards */
+    .card { position: relative; }
+    .card .k .info { display: inline-flex; align-items: center; justify-content: center;
+      width: 14px; height: 14px; margin-left: 5px; border-radius: 50%;
+      background: var(--line); color: var(--muted); font-size: 10px; font-style: normal;
+      font-weight: 700; cursor: help; vertical-align: middle; }
+    .card[data-tip]:hover::after { content: attr(data-tip); position: absolute;
+      left: 0; top: calc(100% - 4px);
+      width: max-content; max-width: 240px; background: #111827; color: #f9fafb;
+      font-size: 12px; font-weight: 400; line-height: 1.4; text-transform: none;
+      letter-spacing: 0; padding: 9px 11px; border-radius: 8px; z-index: 20;
+      box-shadow: 0 6px 20px rgba(0,0,0,.18); pointer-events: none; }
+    /* Rightmost card: anchor tooltip to the right so it never clips off-screen. */
+    .card:last-child[data-tip]:hover::after { left: auto; right: 0; }
+    .card[data-tip]:hover::before { content: ""; position: absolute; left: 18px;
+      top: calc(100% - 4px); transform: translateY(-100%);
+      border: 6px solid transparent; border-bottom-color: #111827; z-index: 20; }
+    .card:last-child[data-tip]:hover::before { left: auto; right: 18px; }
+    .v.good { color: var(--good); } .v.bad { color: var(--bad); } .v.warn { color: var(--warn); }
+    section { margin-top: 34px; }
+    section h2 { font-size: 16px; margin: 0 0 14px; }
+    .panel { background: var(--card); border: 1px solid var(--line);
+      border-radius: var(--radius); padding: 18px 20px; }
+    .two-col { grid-template-columns: 1fr 1fr; align-items: start; }
+    @media (max-width: 760px) { .two-col { grid-template-columns: 1fr; } }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+    td.reason { font-family: ui-monospace, Menlo, monospace; color: #374151; font-size: 12px; }
+    .bar { height: 8px; border-radius: 6px; background: #eef2ff; overflow: hidden; }
+    .bar > span { display: block; height: 100%; background: var(--brand); }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 12px; font-weight: 600; }
+    .badge.hi { background: #fee2e2; color: var(--bad); }
+    .badge.mid { background: #ffedd5; color: var(--warn); }
+    .badge.lo { background: #dcfce7; color: var(--good); }
+    .badge.exc { background: #ede9fe; color: #6d28d9; font-family: ui-monospace, Menlo, monospace; }
+    .sess-link { color: var(--brand); text-decoration: none; font-weight: 600; white-space: nowrap; }
+    .sess-link:hover { text-decoration: underline; }
+    .empty { color: var(--muted); padding: 24px; text-align: center; }
+    .sample-banner { background: #fef3c7; border: 1px solid #f59e0b; color: #92400e;
+      border-radius: var(--radius); padding: 12px 16px; margin-bottom: 22px; font-size: 13px; }
+    .sample-banner code { background: rgba(146,64,14,.12); padding: 1px 5px; border-radius: 4px; }
+    .window-banner { background: #eff6ff; border: 1px solid #93c5fd; color: #1e40af;
+      border-radius: var(--radius); padding: 12px 16px; margin-bottom: 22px; font-size: 13px; }
+    footer { color: var(--muted); font-size: 12px; margin-top: 40px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Test Execution &amp; Analytics — {{ build.project or build.name }}</h1>
+        <div class="sub">
+          {% if build.is_range %}
+            Window <strong>{{ build.name }}</strong> ({{ build.date_from }} → {{ build.date_to }}) ·
+            {% if build.user_name %}Owner <strong>{{ build.user_name }}</strong> · {% endif %}
+            generated {{ generated_at }}
+          {% else %}
+            {% if build.project %}Suite <strong>{{ build.name }}</strong> · {% endif %}
+            {% if build.user_name %}Owner <strong>{{ build.user_name }}</strong> · {% endif %}
+            build <code>{{ build.hashed_id }}</code> · generated {{ generated_at }}
+          {% endif %}
+        </div>
+      </div>
+      <span class="pill">Phase 1 · Static Report</span>
+    </header>
+
+    {% if is_sample %}
+    <div class="sample-banner">
+      ⚠ <strong>SAMPLE DATA</strong> — synthetic output from <code>scripts/generate_mock_data.py</code>,
+      not live BrowserStack. The project name above is a placeholder label. To pull real
+      <strong>Finserv - Gopay Android</strong> results, run
+      <code>python main.py --source api</code> with your credentials set.
+    </div>
+    {% endif %}
+
+    {% if build.is_range %}
+    <div class="window-banner">
+      📊 <strong>Window analysis</strong> — aggregating <strong>{{ build.n_builds }} builds</strong>
+      ({{ build.date_from }} → {{ build.date_to }}). Cards, clusters and device risk below
+      reflect all sessions across this window, not a single run.
+    </div>
+    {% endif %}
+
+    <!-- Executive summary cards -->
+    <div class="grid cards">
+      <div class="card" data-tip="Total test sessions in this build — passed plus failed.">
+        <div class="k">Total tests <i class="info">i</i></div><div class="v">{{ cards.total_tests }}</div>
+        <div class="note">{{ cards.passed }} passed · {{ cards.failed }} failed</div></div>
+      <div class="card" data-tip="Composite reliability score (0–100): the pass rate, minus a penalty when failures concentrate on a single device/OS.">
+        <div class="k">Suite health <i class="info">i</i></div>
+        <div class="v {{ 'good' if cards.suite_health_index >= 85 else 'warn' if cards.suite_health_index >= 65 else 'bad' }}">
+          {{ cards.suite_health_index }}</div><div class="note">/ 100 composite</div></div>
+      <div class="card" data-tip="Percentage of sessions that passed in this build.">
+        <div class="k">Pass rate <i class="info">i</i></div>
+        <div class="v {{ 'good' if cards.pass_rate_pct >= 85 else 'warn' if cards.pass_rate_pct >= 65 else 'bad' }}">
+          {{ cards.pass_rate_pct }}%</div></div>
+      <div class="card" data-tip="Distinct failure clusters found by grouping similar stack traces — how many underlying problems there are, not how many failures.">
+        <div class="k">Root causes <i class="info">i</i></div><div class="v">{{ cards.num_root_causes }}</div>
+        <div class="note">distinct failure clusters</div></div>
+      <div class="card" data-tip="Estimated triage time saved: duplicate failures collapsed into clusters, so you investigate once per root cause instead of once per failure.">
+        <div class="k">MTTR saved <i class="info">i</i></div><div class="v good">{{ cards.mttr_hours_saved }}h</div>
+        <div class="note">via root-cause grouping</div></div>
+    </div>
+
+    <!-- Charts -->
+    <section>
+      <div class="grid two-col">
+        <div class="panel">{{ status_donut | safe }}</div>
+        <div class="panel">
+          {{ device_heatmap | safe }}
+          {% if top_risk_cell %}
+          <p class="note" style="margin-top:8px">
+            Highest-risk environment: <strong>{{ top_risk_cell.device }}</strong> on
+            Android {{ top_risk_cell.os_version }} —
+            {{ (top_risk_cell.failure_rate * 100) | round(0) }}% failure
+            ({{ top_risk_cell.failed }}/{{ top_risk_cell.total }}).
+          </p>
+          {% endif %}
+        </div>
+      </div>
+    </section>
+
+    <!-- Suite health trend (needs >= 2 historical builds) -->
+    {% if trend_chart %}
+    <section>
+      <div class="panel">{{ trend_chart | safe }}</div>
+    </section>
+    {% endif %}
+
+    <!-- Failure cluster breakdown -->
+    <section>
+      <h2>Failure cluster breakdown</h2>
+      <div class="panel">{{ cluster_chart | safe }}</div>
+      {% if clusters %}
+      <div class="panel" style="margin-top:16px">
+        <table>
+          <thead><tr>
+            <th>#</th><th>Root cause (representative)</th><th>Type</th>
+            <th>App version</th><th>Failures</th><th>Confidence</th><th>Session</th>
+          </tr></thead>
+          <tbody>
+          {% for c in clusters %}
+            <tr>
+              <td>{{ c.cluster_id }}</td>
+              <td class="reason">{{ c.label }}</td>
+              <td>{% if c.exception_type %}<span class="badge exc">{{ c.exception_type }}</span>{% else %}—{% endif %}</td>
+              <td>{{ c.app_versions | join(', ') if c.app_versions else '—' }}</td>
+              <td>{{ c.size }}</td>
+              <td>
+                <span class="badge {{ 'lo' if c.confidence >= 0.75 else 'mid' if c.confidence >= 0.5 else 'hi' }}">
+                  {{ (c.confidence * 100) | round(0) }}%
+                </span>
+              </td>
+              <td>
+                {% if c.session_urls %}
+                  <a class="sess-link" href="{{ c.session_urls[0] }}" target="_blank" rel="noopener">▶ replay</a>
+                {% else %}—{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        <p class="note" style="margin-top:8px">
+          "Session" links open the BrowserStack session (video + device logs) — you must be signed in to BrowserStack.
+        </p>
+      </div>
+      {% endif %}
+    </section>
+
+    <!-- Flakiness -->
+    {% if flaky_rows %}
+    <section>
+      <h2>Top flaky scenarios</h2>
+      <div class="panel">
+        <table>
+          <thead><tr>
+            <th>Scenario</th><th>Runs</th><th>Failure rate</th>
+            <th>Flip rate</th><th>Duration CoV</th><th>Flakiness</th>
+          </tr></thead>
+          <tbody>
+          {% for r in flaky_rows %}
+            <tr>
+              <td>{{ r.name }}</td>
+              <td>{{ r.runs }}</td>
+              <td>{{ (r.failure_rate * 100) | round(0) }}%</td>
+              <td>{{ (r.flip_rate * 100) | round(0) }}%</td>
+              <td>{{ r.duration_cov }}</td>
+              <td style="min-width:140px">
+                <div class="bar"><span style="width: {{ (r.flakiness_index * 100) | round(0) }}%"></span></div>
+                <span class="note">{{ r.flakiness_index }}</span>
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        <p class="note" style="margin-top:8px">
+          {% if flaky_source == 'history' %}
+            Flip rate = pass↔fail alternation across historical builds (the truest flakiness signal).
+          {% else %}
+            Single-build view — flip rate needs history; it populates once more builds are ingested.
+          {% endif %}
+        </p>
+      </div>
+    </section>
+    {% endif %}
+
+    <footer>
+      Generated by the Test Execution &amp; Analytics Engine · Phase 1 ·
+      TF-IDF + DBSCAN triage · self-contained report
+    </footer>
+  </div>
+</body>
+</html>
