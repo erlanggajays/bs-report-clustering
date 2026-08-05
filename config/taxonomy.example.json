@@ -1,0 +1,17 @@
+{
+  "_comment": "Copy to config/taxonomy.json (FAILURE_TAXONOMY_PATH) to add or override failure categories. These rules are evaluated BEFORE the built-in defaults, so they take precedence. A rule matches if any pattern (regex, case-insensitive, over reason+log), status, or max_duration_seconds condition holds.",
+  "rules": [
+    {
+      "category": "biometric-prompt",
+      "owner": "Test automation",
+      "patterns": ["fingerprint prompt", "biometric.*not handled", "use PIN instead"],
+      "description": "Unhandled biometric/fingerprint prompt blocked the flow"
+    },
+    {
+      "category": "otp-not-received",
+      "owner": "Backend",
+      "patterns": ["OTP not received", "verification code timed out", "sms gateway"],
+      "description": "OTP/SMS delivery failure"
+    }
+  ]
+}

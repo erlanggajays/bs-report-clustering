@@ -86,6 +86,22 @@ FAILURE_TEMPLATES = [
         "sheet overlay was still visible.",
         "com.gopay.promo.PromoBottomSheet.dismiss",
     ),
+    (
+        "org.openqa.selenium.NoSuchElementException: Unable to locate element "
+        "{{id=btn_next}} — a native system dialog \"Allow Gopay to access this "
+        "device's location? While using the app\" was blocking the screen.",
+        "com.gopay.permissions.PermissionHandler.grant",
+    ),
+    (
+        "Session TIMEOUT: Multiple Failures during app launch. The test did not "
+        "start — app process was not ready within the session boot window.",
+        "com.gopay.runner.SessionBootstrap.launch",
+    ),
+    (
+        "java.lang.RuntimeException: FATAL EXCEPTION: main — com.gopay.consumer "
+        "crashed while rendering the wallet home screen (NullPointerException).",
+        "com.gopay.home.WalletHomeActivity.onCreate",
+    ),
 ]
 
 

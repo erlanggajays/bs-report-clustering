@@ -55,23 +55,55 @@
     section { margin-top: 34px; }
     section h2 { font-size: 16px; margin: 0 0 14px; }
     .panel { background: var(--card); border: 1px solid var(--line);
-      border-radius: var(--radius); padding: 18px 20px; }
-    .two-col { grid-template-columns: 1fr 1fr; align-items: start; }
+      border-radius: var(--radius); padding: 18px 20px; min-width: 0; overflow: hidden; }
+    /* minmax(0,…) lets columns shrink below their content so a wide Plotly chart
+       can't overflow and cover the neighbouring panel. */
+    .two-col { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
     @media (max-width: 760px) { .two-col { grid-template-columns: 1fr; } }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
     th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
-    td.reason { font-family: ui-monospace, Menlo, monospace; color: #374151; font-size: 12px; }
+    td.reason { font-family: ui-monospace, Menlo, monospace; color: #374151; font-size: 12px;
+      overflow-wrap: anywhere; }
     .bar { height: 8px; border-radius: 6px; background: #eef2ff; overflow: hidden; }
     .bar > span { display: block; height: 100%; background: var(--brand); }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 999px;
-      font-size: 12px; font-weight: 600; }
+      font-size: 12px; font-weight: 600; white-space: nowrap; }
     .badge.hi { background: #fee2e2; color: var(--bad); }
     .badge.mid { background: #ffedd5; color: var(--warn); }
     .badge.lo { background: #dcfce7; color: var(--good); }
     .badge.exc { background: #ede9fe; color: #6d28d9; font-family: ui-monospace, Menlo, monospace; }
-    .sess-link { color: var(--brand); text-decoration: none; font-weight: 600; white-space: nowrap; }
-    .sess-link:hover { text-decoration: underline; }
+    .badge.owner { background: #e0f2fe; color: #075985; }
+    /* Expandable failure-category rows (flexbox so the marker isn't a stray column) */
+    .cat-head { display: flex; align-items: center; gap: 10px; padding: 6px 10px 6px 28px;
+      font-size: 12px; text-transform: uppercase; color: var(--muted); font-weight: 600;
+      border-bottom: 1px solid var(--line); }
+    .cat-head .h-cat { flex: 1; }
+    .cat-head .h-count { width: 52px; text-align: right; }
+    details.cat { border-bottom: 1px solid var(--line); }
+    details.cat > summary { display: flex; align-items: center; gap: 10px; padding: 10px;
+      cursor: pointer; list-style: none; font-size: 13px; }
+    details.cat > summary::-webkit-details-marker { display: none; }
+    details.cat > summary::before { content: "▸"; color: var(--muted); font-size: 11px;
+      width: 8px; flex: none; }
+    details.cat[open] > summary::before { content: "▾"; }
+    details.cat > summary .cat-name { flex: 1 1 auto; min-width: 0; font-weight: 600;
+      overflow-wrap: anywhere; }
+    details.cat > summary .cat-count { width: 52px; text-align: right; color: var(--muted);
+      flex: none; }
+    .cat-desc { margin: 0 10px 6px 28px; font-size: 12px; color: var(--muted); font-style: italic; }
+    ul.cat-tests { list-style: none; margin: 0 0 8px; padding: 2px 10px 2px 28px; }
+    ul.cat-tests li { display: flex; align-items: baseline; gap: 8px; padding: 5px 0;
+      font-size: 13px; border-top: 1px dashed var(--line); min-width: 0; flex-wrap: wrap; }
+    /* Long camelCase test names are single unbreakable tokens: allow them to wrap
+       (min-width:0 + overflow-wrap) so they can't push the meta/link out of view. */
+    ul.cat-tests .t-name { flex: 1 1 60%; min-width: 0; color: #374151;
+      overflow-wrap: anywhere; }
+    /* The test name IS the replay link (bigger target than a separate icon). */
+    ul.cat-tests .t-meta { flex: 0 0 auto; margin-left: auto; color: var(--muted);
+      font-size: 12px; white-space: nowrap; }
+    a.t-link { color: var(--brand); text-decoration: none; }
+    a.t-link:hover { text-decoration: underline; }
     .empty { color: var(--muted); padding: 24px; text-align: center; }
     .sample-banner { background: #fef3c7; border: 1px solid #f59e0b; color: #92400e;
       border-radius: var(--radius); padding: 12px 16px; margin-bottom: 22px; font-size: 13px; }
@@ -164,6 +196,48 @@
     </section>
     {% endif %}
 
+    <!-- Failure categories (rule-based taxonomy + owner routing) -->
+    {% if category_rows %}
+    <section>
+      <h2>Failure categories</h2>
+      <div class="grid two-col">
+        <div class="panel">{{ category_chart | safe }}</div>
+        <div class="panel">
+          <div class="cat-head"><span class="h-cat">Category</span><span>Owner</span><span class="h-count">Failures</span></div>
+          {% for c in category_details %}
+          <details class="cat">
+            <summary>
+              <span class="cat-name">{{ c.category }}</span>
+              <span class="badge owner">{{ c.owner }}</span>
+              <span class="cat-count">{{ c.count }}</span>
+            </summary>
+            {% if c.description %}<p class="cat-desc">{{ c.description }}</p>{% endif %}
+            <ul class="cat-tests">
+              {% for t in c.tests %}
+              <li>
+                {% if t.session_url %}
+                  <a class="t-name t-link" href="{{ t.session_url }}" target="_blank" rel="noopener"
+                     title="Open this session in BrowserStack (video + logs)">{{ t.name }}</a>
+                {% else %}
+                  <span class="t-name">{{ t.name }}</span>
+                {% endif %}
+                <span class="t-meta">×{{ t.count }}{% if t.device %} · {{ t.device }}{% endif %}</span>
+              </li>
+              {% endfor %}
+            </ul>
+          </details>
+          {% endfor %}
+          <p class="note" style="margin-top:10px">
+            Click a category to see which tests fell into it, then click a test name to open
+            its BrowserStack session (video + logs; sign-in required). Categories route each
+            failure to an owner — app bugs vs test-automation gaps vs infra flakes;
+            uncategorized failures fall through to the clusters below.
+          </p>
+        </div>
+      </div>
+    </section>
+    {% endif %}
+
     <!-- Failure cluster breakdown -->
     <section>
       <h2>Failure cluster breakdown</h2>
@@ -173,13 +247,18 @@
         <table>
           <thead><tr>
             <th>#</th><th>Root cause (representative)</th><th>Type</th>
-            <th>App version</th><th>Failures</th><th>Confidence</th><th>Session</th>
+            <th>App version</th><th>Failures</th><th>Confidence</th>
           </tr></thead>
           <tbody>
           {% for c in clusters %}
             <tr>
               <td>{{ c.cluster_id }}</td>
-              <td class="reason">{{ c.label }}</td>
+              <td class="reason">
+                {% if c.session_urls %}
+                  <a class="t-link" href="{{ c.session_urls[0] }}" target="_blank" rel="noopener"
+                     title="Open an example session in BrowserStack (video + logs)">{{ c.label }}</a>
+                {% else %}{{ c.label }}{% endif %}
+              </td>
               <td>{% if c.exception_type %}<span class="badge exc">{{ c.exception_type }}</span>{% else %}—{% endif %}</td>
               <td>{{ c.app_versions | join(', ') if c.app_versions else '—' }}</td>
               <td>{{ c.size }}</td>
@@ -188,17 +267,12 @@
                   {{ (c.confidence * 100) | round(0) }}%
                 </span>
               </td>
-              <td>
-                {% if c.session_urls %}
-                  <a class="sess-link" href="{{ c.session_urls[0] }}" target="_blank" rel="noopener">▶ replay</a>
-                {% else %}—{% endif %}
-              </td>
             </tr>
           {% endfor %}
           </tbody>
         </table>
         <p class="note" style="margin-top:8px">
-          "Session" links open the BrowserStack session (video + device logs) — you must be signed in to BrowserStack.
+          Click a root cause to open an example BrowserStack session (video + device logs) — sign-in required.
         </p>
       </div>
       {% endif %}

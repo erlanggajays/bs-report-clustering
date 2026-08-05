@@ -21,6 +21,9 @@ env/
 .vscode/
 .DS_Store
 
+# Local taxonomy override (keep the .example committed as the reference)
+config/taxonomy.json
+
 # Generated artifacts (reports, mock payloads, SQLite history)
 data/*
 !data/.gitkeep

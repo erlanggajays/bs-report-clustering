@@ -5,11 +5,19 @@ import pytest
 
 import ingestor
 from ingestor import (
+    _looks_like_crash,
     _strip_token,
     get_project_id_by_name,
     get_recent_builds_for_project,
     IngestionError,
 )
+
+
+def test_looks_like_crash():
+    assert _looks_like_crash("FATAL EXCEPTION: main\n\tat com.gopay.Foo.bar(Foo.java:1)") is True
+    assert _looks_like_crash("No crashes were detected for this session.") is False
+    assert _looks_like_crash("") is False
+    assert _looks_like_crash("   ") is False
 
 
 def test_parse_basic_fields(sample_df):

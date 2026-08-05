@@ -17,6 +17,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from plotly.offline import get_plotlyjs
 
 from exec_metrics import ExecMetrics
+from taxonomy import category_description
 from triage_engine import FailureCluster
 
 _TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates"
@@ -32,9 +33,15 @@ _LAYOUT = dict(
 )
 
 
-def _fig_to_div(fig: go.Figure, div_id: str) -> str:
-    """Render a figure as an embeddable div; JS is injected once, globally."""
+def _fig_to_div(fig: go.Figure, div_id: str, **layout_overrides) -> str:
+    """Render a figure as an embeddable div; JS is injected once, globally.
+
+    ``layout_overrides`` are applied *after* the shared layout, so a chart can
+    tweak margins/legend without every other chart inheriting it.
+    """
     fig.update_layout(**_LAYOUT)
+    if layout_overrides:
+        fig.update_layout(**layout_overrides)
     return fig.to_html(
         full_html=False,
         include_plotlyjs=False,
@@ -77,6 +84,62 @@ def _cluster_chart(clusters: list[FailureCluster]) -> str:
         coloraxis_colorbar=dict(title="conf"),
     )
     return _fig_to_div(fig, "cluster-chart")
+
+
+def _category_chart(categories: pd.DataFrame | None) -> str:
+    if categories is None or categories.empty:
+        return ""
+    agg = categories.groupby("category", as_index=False)["count"].sum()
+    owner_by_cat = dict(zip(categories["category"], categories["owner"]))
+    agg["owner"] = agg["category"].map(owner_by_cat)
+    agg = agg.sort_values("count")
+    fig = px.bar(
+        agg,
+        x="count",
+        y="category",
+        orientation="h",
+        color="owner",
+        title="Failures by category",
+    )
+    # Legend below the plot (was colliding with the title at the top).
+    return _fig_to_div(
+        fig,
+        "category-chart",
+        margin=dict(l=40, r=20, t=44, b=96),
+        yaxis=dict(automargin=True, title=None),
+        legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="left", x=0, title=None),
+    )
+
+
+def _category_details(classified: pd.DataFrame | None) -> list[dict]:
+    """Per-category test breakdown for the expandable table: which tests fell into
+    each category, how often, and a link to one example session."""
+    if classified is None or classified.empty:
+        return []
+    out: list[dict] = []
+    for cat in classified["category"].value_counts().index:  # busiest first
+        sub = classified[classified["category"] == cat]
+        has_url = "session_url" in sub.columns
+        tests = []
+        for name, g in sub.groupby("name"):
+            url = ""
+            if has_url:
+                url = next((u for u in g["session_url"].tolist() if u), "")
+            tests.append({
+                "name": name or "(unnamed test)",
+                "count": int(len(g)),
+                "device": g["device"].iloc[0] if "device" in g else "",
+                "session_url": url,
+            })
+        tests.sort(key=lambda t: t["count"], reverse=True)
+        out.append({
+            "category": cat,
+            "owner": sub["owner"].iloc[0],
+            "count": int(len(sub)),
+            "description": category_description(cat),
+            "tests": tests,
+        })
+    return out
 
 
 def _device_heatmap(device_risk: pd.DataFrame) -> str:
@@ -150,6 +213,8 @@ def generate_report(
     output_path: str | Path | None = None,
     is_sample: bool = False,
     trend: pd.DataFrame | None = None,
+    categories: pd.DataFrame | None = None,
+    classified: pd.DataFrame | None = None,
 ) -> Path:
     """Render every artifact into a single standalone HTML file and return its path.
 
@@ -170,6 +235,12 @@ def generate_report(
     # _flakiness_from_history emits a "builds" column; the in-build proxy does not.
     flaky_source = "history" if "builds" in flakiness.columns else "in-build"
 
+    category_rows = (
+        categories.sort_values("count", ascending=False).to_dict(orient="records")
+        if categories is not None and not categories.empty
+        else []
+    )
+
     html = template.render(
         plotly_js=get_plotlyjs(),
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -184,6 +255,9 @@ def generate_report(
         device_heatmap=_device_heatmap(device_risk),
         status_donut=_status_donut(metrics),
         trend_chart=_trend_chart(trend),
+        category_chart=_category_chart(categories),
+        category_rows=category_rows,
+        category_details=_category_details(classified),
     )
 
     out = Path(output_path or _DEFAULT_OUTPUT)

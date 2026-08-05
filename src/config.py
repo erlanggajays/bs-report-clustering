@@ -17,6 +17,13 @@ BROWSERSTACK_BASE_URL = "https://api-cloud.browserstack.com/app-automate"
 PROJECTS_ENDPOINT = f"{BROWSERSTACK_BASE_URL}/projects.json"
 PROJECT_DETAIL_ENDPOINT = f"{BROWSERSTACK_BASE_URL}/projects/{{project_id}}.json"
 SESSIONS_ENDPOINT = f"{BROWSERSTACK_BASE_URL}/builds/{{build_id}}/sessions.json"
+# Full Appium session log (text) — stable, constructible, no expiry. Feeds the
+# failure-taxonomy classifier and stack-trace enrichment.
+_SESSION_LOG_BASE = f"{BROWSERSTACK_BASE_URL}/builds/{{build_id}}/sessions/{{session_id}}"
+SESSION_LOGS_ENDPOINT = f"{_SESSION_LOG_BASE}/logs"           # session text log
+SESSION_APPIUM_LOGS_ENDPOINT = f"{_SESSION_LOG_BASE}/appiumlogs"  # full Appium server log
+SESSION_CRASH_LOGS_ENDPOINT = f"{_SESSION_LOG_BASE}/crashlogs"    # native crash stack
+SESSION_DEVICE_LOGS_ENDPOINT = f"{_SESSION_LOG_BASE}/devicelogs"  # logcat (large)
 
 
 @dataclass(frozen=True)
@@ -65,11 +72,21 @@ class Settings:
             if s.strip()
         )
     )
-    # Fetch terminal logs for failed sessions to recover real stack traces for
-    # clustering (off by default: it is N extra HTTP calls). ENRICH_LOGS=1.
+    # Fetch logs for failed sessions to recover real stack traces (for clustering)
+    # and feed the taxonomy classifier (off by default: N extra HTTP calls).
     enrich_failure_logs: bool = field(
         default_factory=lambda: os.environ.get("ENRICH_LOGS", "").lower()
         in {"1", "true", "yes"}
+    )
+    # Which log sources to fetch during enrichment (crash = definitive crash signal,
+    # appium = richest failure detail, device = large logcat, text = session log).
+    # Comma-separated via LOG_SOURCES.
+    log_sources: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            s.strip().lower()
+            for s in os.environ.get("LOG_SOURCES", "crash,appium").split(",")
+            if s.strip()
+        )
     )
 
     # HTTP behaviour
@@ -97,6 +114,18 @@ class Settings:
             for s in os.environ.get("APP_PACKAGE_HINTS", "gopay,gojek").split(",")
             if s.strip()
         )
+    )
+
+    # Failure taxonomy: rule-based classification into actionable categories with
+    # an owner. Code defaults apply; an optional JSON file (evaluated first) lets
+    # QA add/override categories without touching code.
+    taxonomy_config_path: str = field(
+        default_factory=lambda: os.environ.get("FAILURE_TAXONOMY_PATH", "config/taxonomy.json")
+    )
+    # A "failed" session shorter than this almost certainly aborted before running
+    # (app install / session start), not a real test failure.
+    min_valid_test_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("MIN_VALID_TEST_SECONDS", "60"))
     )
 
     # Device risk: below this many runs, a cell is flagged low-confidence and

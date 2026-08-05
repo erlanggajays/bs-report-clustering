@@ -25,6 +25,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from config import settings
+from taxonomy import category_description, classify
 
 # Matches fully-qualified exception/error class names in a stack trace.
 _EXCEPTION_RE = re.compile(r"([A-Za-z_][\w.]*(?:Exception|Error|Failure|Timeout))")
@@ -77,11 +78,17 @@ class FailureCluster:
         }
 
 
-def _normalize(reason: str) -> str:
-    text = reason.lower()
+def _mask(reason: str) -> str:
+    """Mask volatile tokens, preserving case (used for human-facing labels)."""
+    text = reason or ""
     for pattern, repl in _NOISE_PATTERNS:
         text = pattern.sub(repl, text)
     return text.strip()
+
+
+def _normalize(reason: str) -> str:
+    """Masked and lower-cased — the form fed to the TF-IDF vectorizer."""
+    return _mask(reason).lower()
 
 
 def _exception_type(reason: str) -> str:
@@ -135,18 +142,56 @@ def _top_frame(reason: str) -> str:
     return first
 
 
-def _fingerprint(reason: str) -> str:
-    """Stable root-cause signature: 'Exception @ Class.method'.
+def _app_frame(reason: str) -> str:
+    """The top frame that belongs to an application package, as 'Class.method'.
 
-    Robust to volatile details (element ids, line numbers, timings) because it is
-    built from structure, not raw text. Empty when there is no parseable
-    exception (such failures fall back to text clustering).
+    Strict (unlike ``_top_frame``): returns "" rather than an arbitrary framework
+    frame, because framework frames vary between otherwise-identical failures and
+    would split a single root cause into several clusters.
+    """
+    for m in _FRAME_RE.finditer(reason or ""):
+        cls_path, method = m.group(1), m.group(2)
+        if any(h in cls_path.lower() for h in settings.app_package_hints):
+            return f"{cls_path.split('.')[-1]}.{method}"
+    return ""
+
+
+def _message_signature(reason: str, words: int = 8, max_len: int = 64) -> str:
+    """A stable template from the message's first line.
+
+    Runs through ``_normalize`` first, so locators/ids/numbers are masked — meaning
+    "Can't locate an element ... accessibilityId: Lifetime interest" and the same
+    error on a different locator share one signature.
+    """
+    first = (reason or "").strip().splitlines()[0] if (reason or "").strip() else ""
+    if not first:
+        return ""
+    # Drop a leading fully-qualified exception class (already in the fingerprint).
+    first = re.sub(r"^[\w.$]*(?:Exception|Error|Failure|Timeout)\s*:\s*", "", first)
+    # Case-preserving mask, so the label stays readable in the report.
+    sig = " ".join(_mask(first).split()[:words])[:max_len]
+    # Trim ragged trailing punctuation left by truncation (e.g. "By.chained(").
+    return sig.rstrip(" ([{:,-").strip()
+
+
+def _fingerprint(reason: str) -> str:
+    """Stable root-cause signature, robust to volatile details.
+
+    Preference order:
+      1. ``Exception @ AppClass.method`` — the most actionable form.
+      2. ``Exception: <masked message template>`` — when only framework frames
+         exist, the templated message discriminates root causes without splitting
+         on element ids or numbers.
+      3. Empty — nothing parseable; the text-clustering fallback handles it.
     """
     exc = _root_exception(reason)
-    frame = _top_frame(reason)
+    frame = _app_frame(reason)
     if exc and frame:
         return f"{exc} @ {frame}"
-    return exc  # exception-only, or "" when nothing parseable
+    if exc:
+        sig = _message_signature(reason)
+        return f"{exc}: {sig}" if sig else exc
+    return ""
 
 
 def _build_matrix(normalized: list[str]):
@@ -375,16 +420,49 @@ def flakiness_index(
     return _flakiness_in_build(df)
 
 
+def classify_failures(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Assign each failure a taxonomy (category, owner) and return a breakdown.
+
+    Returns (classified_failures, breakdown). The breakdown aggregates counts per
+    (category, owner) so the report can answer "how much is our bug vs test flake
+    vs infra?" at a glance.
+    """
+    failures = df[df["is_failure"]].copy()
+    cols = ["category", "owner", "count"]
+    if failures.empty:
+        return failures.assign(category=[], owner=[]), pd.DataFrame(columns=cols)
+
+    results = [
+        classify(
+            r.get("reason", ""), r.get("log_text", ""),
+            float(r.get("duration", 0.0)), r.get("status", ""),
+        )
+        for _, r in failures.iterrows()
+    ]
+    failures["category"] = [c for c, _ in results]
+    failures["owner"] = [o for _, o in results]
+
+    breakdown = (
+        failures.groupby(["category", "owner"]).size().reset_index(name="count")
+        .sort_values("count", ascending=False).reset_index(drop=True)
+    )
+    breakdown["description"] = breakdown["category"].map(category_description)
+    return failures, breakdown
+
+
 def run_triage(
     df: pd.DataFrame, history: pd.DataFrame | None = None
 ) -> dict[str, Any]:
     """Convenience wrapper returning every triage artifact in one dict."""
     clusters, annotated = cluster_failures(df)
+    classified, categories = classify_failures(df)
     return {
         "clusters": clusters,
         "annotated_failures": annotated,
         "device_anomaly": device_anomaly(df),
         "flakiness": flakiness_index(df, history),
+        "classified_failures": classified,
+        "categories": categories,
     }
 
 

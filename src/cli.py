@@ -119,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
             build_meta, metrics, triage["clusters"], triage["device_anomaly"],
             triage["flakiness"], output_path=args.output,
             is_sample=(args.source == "file"), trend=trend,
+            categories=triage["categories"],
+            classified=triage["classified_failures"],
         )
         logger.info("\n✅ Report: %s", path)
         return 0

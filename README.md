@@ -110,9 +110,33 @@ so demo data never pollutes real history. Seed demo history with
 - **Executive cards** — total tests, suite health, pass rate, root causes, MTTR saved.
 - **Pass/fail donut** + **device/OS heatmap** (Wilson-scored, small samples flagged).
 - **Suite pass-rate trend** across historical builds.
-- **Failure clusters** — exception type, affected app version, confidence, and a
-  **deep-link to the BrowserStack session replay** (token-free; sign-in required).
+- **Failure categories** — rule-based taxonomy routing each failure to an **owner**
+  (Dev / Backend / Test automation / Infra), so you see app-bugs vs test-flakes vs infra.
+- **Failure clusters** — signature fingerprint (`Exception @ Class.method`),
+  affected app version, confidence, and a **deep-link to the session replay**.
 - **Flaky scenarios** — true pass↔fail flip-rate once history accumulates.
+
+## Failure taxonomy
+
+Failures are classified into named categories with an owner. Rules come from code
+defaults, optionally **overridden by `config/taxonomy.json`** (evaluated first — see
+`config/taxonomy.example.json` for the format; set `FAILURE_TAXONOMY_PATH` to relocate).
+A category matches on regex over `reason` + log text, session status, or a duration
+threshold (`MIN_VALID_TEST_SECONDS`, default 60 → "test did not run"). Anything
+unmatched falls through to the fingerprint clustering.
+
+Native-dialog / crash categories only fire when the logs are available, so run
+with `--enrich-logs`. Enrichment fetches the configured **log sources** per failed
+session (`LOG_SOURCES`, default `crash,appium`; also `device`, `text`) — feeding
+both the classifier and stack-trace clustering:
+
+- **`crash`** (`/crashlogs`) — a present crashlog reliably tags the failure as
+  `app-crash` (owner: Dev), even when the surface symptom looks like element-not-found.
+- **`appium`** (`/appiumlogs`) — richest detail: permission dialogs, failed locators,
+  WebView context errors.
+- **`device`** (`/devicelogs`) — full logcat (large; opt-in) for ANRs / native issues.
+
+More sources = fewer `uncategorized`, at the cost of extra HTTP calls per failed session.
 
 ## Design notes
 

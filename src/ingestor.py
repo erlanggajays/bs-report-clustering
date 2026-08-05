@@ -23,9 +23,24 @@ from urllib3.util.retry import Retry
 from config import (
     PROJECT_DETAIL_ENDPOINT,
     PROJECTS_ENDPOINT,
+    SESSION_APPIUM_LOGS_ENDPOINT,
+    SESSION_CRASH_LOGS_ENDPOINT,
+    SESSION_DEVICE_LOGS_ENDPOINT,
+    SESSION_LOGS_ENDPOINT,
     SESSIONS_ENDPOINT,
     settings,
 )
+
+# Log-source name -> endpoint template. Enrichment fetches settings.log_sources.
+_LOG_ENDPOINTS = {
+    "crash": SESSION_CRASH_LOGS_ENDPOINT,
+    "appium": SESSION_APPIUM_LOGS_ENDPOINT,
+    "device": SESSION_DEVICE_LOGS_ENDPOINT,
+    "text": SESSION_LOGS_ENDPOINT,
+}
+# Injected into log_text when a crashlog is present, so a taxonomy rule can match
+# it deterministically ("presence of crashlog => app crashed").
+CRASH_MARKER = "BROWSERSTACK_CRASHLOG_PRESENT"
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +70,9 @@ COLUMNS = [
     "session_url",       # token-free deep link to the BrowserStack session
     "logs",
     "created_at",
-    "terminal_logs_url",  # signed URL, kept in-memory for enrichment only
+    "build_id",          # build hashed_id, for constructing the /logs endpoint
+    "log_text",          # enriched Appium log text (for taxonomy + clustering)
+    "terminal_logs_url",  # signed URL, kept in-memory for enrichment fallback
 ]
 
 
@@ -96,6 +113,8 @@ def _sessions_to_dataframe(sessions: list[dict[str, Any]]) -> pd.DataFrame:
                 "session_url": session_url,
                 "logs": _strip_token(s.get("logs", "")),
                 "created_at": s.get("created_at", ""),
+                "build_id": s.get("build_hashed_id", ""),
+                "log_text": "",  # populated by enrichment when --enrich-logs is set
                 "terminal_logs_url": s.get("session_terminal_logs_url", ""),
             }
         )
@@ -143,6 +162,15 @@ def _get(url: str, params: dict[str, Any] | None = None) -> Any:
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def _get_text(url: str) -> str:
+    """GET a plain-text resource (e.g. the session /logs endpoint)."""
+    if not settings.has_credentials:
+        raise IngestionError("BrowserStack credentials missing.")
+    resp = _http().get(url, auth=settings.auth, timeout=settings.request_timeout_seconds)
+    resp.raise_for_status()
+    return resp.text
 
 
 def get_project_id_by_name(project_name: str) -> int:
@@ -252,21 +280,70 @@ def _extract_error(log_text: str, max_lines: int = 15, max_chars: int = 2000) ->
     return "\n".join(chosen)[:max_chars]
 
 
-def enrich_failure_reasons(df: pd.DataFrame) -> pd.DataFrame:
-    """Best-effort: replace terse failure reasons (e.g. non-stack-trace text)
-    with the error tail of the BrowserStack terminal log, where real Appium
-    stack traces live. Network failures are swallowed per-session so one bad
-    fetch never aborts the run.
+def _looks_like_crash(text: str) -> bool:
+    """A crashlog endpoint returns content only when the app actually crashed;
+    guard against empty / "no crash" placeholder responses."""
+    t = (text or "").strip()
+    if len(t) < 20:
+        return False
+    low = t.lower()
+    return not any(x in low for x in ("no crash", "not available", "no data", "no logs found"))
+
+
+def _fetch_session_logs(build_id: str, session_id: str, terminal_url: str) -> tuple[str, bool]:
+    """Fetch the configured log sources for a failed session.
+
+    Returns (combined_text, crash_present). Each source is best-effort — a failed
+    fetch is skipped, not fatal. Falls back to the signed terminal-log S3 URL only
+    if no configured API source returned anything.
     """
-    mask = df["is_failure"] & df["terminal_logs_url"].str.len().gt(0)
-    for idx in df.index[mask]:
-        url = df.at[idx, "terminal_logs_url"]
+    parts: list[str] = []
+    crash_present = False
+    if build_id and session_id:
+        for src in settings.log_sources:
+            endpoint = _LOG_ENDPOINTS.get(src)
+            if not endpoint:
+                continue
+            try:
+                text = _get_text(endpoint.format(build_id=build_id, session_id=session_id))
+            except (requests.RequestException, IngestionError):
+                continue
+            if not text or not text.strip():
+                continue
+            if src == "crash":
+                if not _looks_like_crash(text):
+                    continue
+                crash_present = True
+            parts.append(f"--- {src} ---\n{text[-6000:]}")
+
+    if not parts and terminal_url:
         try:
-            resp = requests.get(url, timeout=settings.request_timeout_seconds)
+            resp = requests.get(terminal_url, timeout=settings.request_timeout_seconds)
             resp.raise_for_status()
-            snippet = _extract_error(resp.text)
+            if resp.text.strip():
+                parts.append(resp.text[-6000:])
         except requests.RequestException:
+            pass
+
+    return "\n".join(parts), crash_present
+
+
+def enrich_failure_reasons(df: pd.DataFrame) -> pd.DataFrame:
+    """Best-effort: fetch each failed session's logs to (1) recover the real stack
+    trace into ``reason`` for clustering and (2) store the log tail in ``log_text``
+    for the taxonomy classifier. A present crashlog injects CRASH_MARKER so the
+    classifier can tag it as an app crash. Network failures are swallowed per
+    session so one bad fetch never aborts the run.
+    """
+    for idx in df.index[df["is_failure"]]:
+        combined, crash = _fetch_session_logs(
+            df.at[idx, "build_id"], df.at[idx, "session_id"], df.at[idx, "terminal_logs_url"]
+        )
+        if not combined:
             continue
+        marker = f"{CRASH_MARKER}\n" if crash else ""
+        df.at[idx, "log_text"] = marker + combined[-8000:]  # marker kept at front
+        snippet = _extract_error(combined)
         if snippet:
             df.at[idx, "reason"] = snippet
     return df
