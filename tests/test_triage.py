@@ -5,6 +5,8 @@ import pandas as pd
 
 from triage_engine import (
     _exception_type,
+    _fingerprint,
+    _top_frame,
     _wilson_lower_bound,
     cluster_failures,
     device_anomaly,
@@ -12,18 +14,32 @@ from triage_engine import (
 )
 
 
-def test_clustering_groups_similar_traces(sample_df):
+def test_clustering_groups_by_signature(sample_df):
     clusters, annotated = cluster_failures(sample_df)
 
     def cid(sid):
         return annotated.loc[annotated.session_id == sid, "cluster_id"].iloc[0]
 
-    # The two NoSuchElement failures share a cluster; the two SocketTimeouts share
-    # another; and the two groups are distinct.
+    # Same exception + same app frame -> one cluster, despite differing element ids.
     assert cid("s2") == cid("s3")
     assert cid("s4") == cid("s5")
     assert cid("s2") != cid("s4")
     assert len(clusters) == 2
+    # Clusters are self-labeled by their root-cause signature.
+    labels = {c.label for c in clusters}
+    assert "NoSuchElementException @ PaymentConfirmScreen.tapConfirm" in labels
+    assert "SocketTimeoutException @ WalletApiClient.getBalance" in labels
+
+
+def test_fingerprint_prefers_app_frame_and_deepest_cause():
+    assert _top_frame("boom\n\tat com.gopay.a.B.c(F:1)") == "B.c"
+    # Caused-by chain: deepest cause wins.
+    fp = _fingerprint(
+        "org.openqa.selenium.WebDriverException: session broke\n"
+        "Caused by: java.net.SocketTimeoutException: read timed out\n"
+        "\tat com.gopay.net.WalletApiClient.getBalance(WalletApiClient.java:88)"
+    )
+    assert fp == "SocketTimeoutException @ WalletApiClient.getBalance"
 
 
 def test_exception_type_extraction():

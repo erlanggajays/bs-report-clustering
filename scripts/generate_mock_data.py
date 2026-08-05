@@ -46,38 +46,45 @@ TEST_SCENARIOS = [
     "Balance refreshes after successful top-up",
 ]
 
-# Recurring failure signatures -> the clustering engine should recover these
-# as distinct root-cause groups.
+# Recurring failure signatures: (message, app stack frame). Each root cause has a
+# FIXED frame, so the same buggy code path recurs across many test scenarios and
+# the fingerprinting engine groups them — as it would in real BrowserStack data.
 FAILURE_TEMPLATES = [
     (
         "org.openqa.selenium.NoSuchElementException: Unable to locate element "
         "{{id=btn_confirm_payment}} within 20000ms. Page may not have finished "
-        "rendering after the network call to /v1/payments returned."
+        "rendering after the network call to /v1/payments returned.",
+        "com.gopay.payments.PaymentConfirmScreen.tapConfirm",
     ),
     (
         "java.net.SocketTimeoutException: timeout while calling backend "
         "https://api.internal.example.com/wallet/balance after 30000ms. "
-        "Retry budget exhausted."
+        "Retry budget exhausted.",
+        "com.gopay.net.WalletApiClient.getBalance",
     ),
     (
         "org.openqa.selenium.StaleElementReferenceException: stale element "
         "reference: element is not attached to the page document. Element "
-        "{{class=RecyclerView.row}} was recycled during scroll."
+        "{{class=RecyclerView.row}} was recycled during scroll.",
+        "com.gopay.common.RecyclerScroller.scrollToItem",
     ),
     (
         "junit.framework.AssertionFailedError: expected balance <Rp 150.000> "
         "but was <Rp 100.000>. Ledger did not reflect the top-up within the "
-        "polling window."
+        "polling window.",
+        "com.gopay.tests.assertions.LedgerAssertions.assertBalance",
     ),
     (
         "io.appium.java_client.NoSuchContextException: The context WEBVIEW_com."
         "gopay.consumer is not available. WebView bridge failed to attach on "
-        "this device build."
+        "this device build.",
+        "com.gopay.webview.WebViewBridge.attachContext",
     ),
     (
         "org.openqa.selenium.ElementClickInterceptedException: element click "
         "intercepted: other element would receive the click. A promo bottom-"
-        "sheet overlay was still visible."
+        "sheet overlay was still visible.",
+        "com.gopay.promo.PromoBottomSheet.dismiss",
     ),
 ]
 
@@ -103,8 +110,13 @@ def _make_session(
 
     reason = ""
     if failed:
-        template = rng.choice(FAILURE_TEMPLATES)
-        reason = template + f"\n\tat com.gopay.tests.{scenario.split()[0]}Test.run(Test.java:{rng.randint(40, 320)})"
+        message, frame = rng.choice(FAILURE_TEMPLATES)
+        # Real traces list the throw site first, test entry point last. The fixed
+        # root-cause frame therefore comes before the scenario test frame.
+        reason = (
+            f"{message}\n\tat {frame}(SourceFile:{rng.randint(40, 500)})"
+            f"\n\tat com.gopay.tests.{scenario.split()[0]}Test.run(Test.java:{rng.randint(40, 320)})"
+        )
 
     created = base_time + timedelta(seconds=index * rng.randint(20, 90))
     base = f"https://app-automate.browserstack.com/builds/mock/sessions/{sid}"

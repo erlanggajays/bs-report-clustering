@@ -84,9 +84,20 @@ class Settings:
     sessions_page_size: int = 100      # pagination page size for sessions.json
     max_session_pages: int = 100       # safety cap against non-paginating loops
 
-    # Clustering (TF-IDF + DBSCAN) tunables.
+    # Clustering tunables. Failures are grouped by a fingerprint (exception +
+    # top application stack frame); DBSCAN is the fallback for free-text failures
+    # with no parseable trace.
     dbscan_eps: float = 0.55
     dbscan_min_samples: int = 2
+    # Package hints identifying *your* stack frames (the actionable ones), so the
+    # fingerprint anchors on your code, not framework frames. Comma-separated.
+    app_package_hints: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            s.strip().lower()
+            for s in os.environ.get("APP_PACKAGE_HINTS", "gopay,gojek").split(",")
+            if s.strip()
+        )
+    )
 
     # Device risk: below this many runs, a cell is flagged low-confidence and
     # ranked by the Wilson lower bound rather than the raw failure rate.

@@ -19,6 +19,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from scipy.sparse import hstack
 from sklearn.cluster import DBSCAN
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -27,14 +28,23 @@ from config import settings
 
 # Matches fully-qualified exception/error class names in a stack trace.
 _EXCEPTION_RE = re.compile(r"([A-Za-z_][\w.]*(?:Exception|Error|Failure|Timeout))")
+# Deepest "Caused by:" is usually the true root cause.
+_CAUSED_BY_RE = re.compile(r"Caused by:\s*([A-Za-z_][\w.]*(?:Exception|Error|Failure|Timeout))")
+# A stack frame: `at pkg.Class.method(File.java:123)` -> class path, method.
+_FRAME_RE = re.compile(r"\bat\s+([\w.$]+)\.([\w<>$]+)\s*\(")
 
-# Volatile tokens (ids, timings, memory addresses) are masked so that two
-# failures with the same root cause but different runtime values still cluster.
+# Volatile tokens (ids, timings, locators, urls, literals) are masked so that
+# two failures with the same root cause but different runtime values still
+# cluster. Order matters: broader/structured patterns first.
 _NOISE_PATTERNS = [
+    (re.compile(r"https?://\S+"), " URL "),
+    (re.compile(r"\{\{?[^{}]*\}?\}"), " LOC "),         # {{id=btn}} / {id=btn} locators
+    (re.compile(r"'[^']*'|\"[^\"]*\""), " STR "),        # quoted literals
     (re.compile(r"0x[0-9a-fA-F]+"), " HEX "),
+    (re.compile(r"\b[0-9a-f]{16,}\b"), " HASH "),        # long hex / uuid-ish ids
     (re.compile(r"\b\d+ms\b"), " DUR "),
-    (re.compile(r"\b\d[\d.,]*\b"), " NUM "),
-    (re.compile(r"[0-9a-f]{16,}"), " HASH "),
+    (re.compile(r":\d+\b"), " LINE "),                   # File.java:213 line numbers
+    (re.compile(r"\b\d[\d.,]*\b"), " NUM "),             # numbers, currency amounts
     (re.compile(r"\s+"), " "),
 ]
 
@@ -99,14 +109,69 @@ def _cluster_extras(members: pd.DataFrame) -> tuple[list[str], list[str]]:
     return urls, versions
 
 
+def _root_exception(reason: str) -> str:
+    """The most informative exception class: the deepest 'Caused by:' if present,
+    else the first thrown exception."""
+    causes = _CAUSED_BY_RE.findall(reason or "")
+    if causes:
+        return causes[-1].split(".")[-1]
+    return _exception_type(reason)
+
+
+def _top_frame(reason: str) -> str:
+    """The most actionable stack frame as 'Class.method'.
+
+    Prefers the first frame in an application package (settings.app_package_hints);
+    falls back to the first frame of any kind. Empty if no frame is present.
+    """
+    first = ""
+    for m in _FRAME_RE.finditer(reason or ""):
+        cls_path, method = m.group(1), m.group(2)
+        label = f"{cls_path.split('.')[-1]}.{method}"
+        if not first:
+            first = label
+        if any(h in cls_path.lower() for h in settings.app_package_hints):
+            return label
+    return first
+
+
+def _fingerprint(reason: str) -> str:
+    """Stable root-cause signature: 'Exception @ Class.method'.
+
+    Robust to volatile details (element ids, line numbers, timings) because it is
+    built from structure, not raw text. Empty when there is no parseable
+    exception (such failures fall back to text clustering).
+    """
+    exc = _root_exception(reason)
+    frame = _top_frame(reason)
+    if exc and frame:
+        return f"{exc} @ {frame}"
+    return exc  # exception-only, or "" when nothing parseable
+
+
+def _build_matrix(normalized: list[str]):
+    """Combined word + char n-gram TF-IDF (char n-grams are robust to identifiers
+    and CamelCase). Returns None for a single document."""
+    if len(normalized) < 2:
+        return None
+    word = TfidfVectorizer(ngram_range=(1, 2), analyzer="word", min_df=1, sublinear_tf=True)
+    char = TfidfVectorizer(ngram_range=(3, 5), analyzer="char_wb", min_df=1, sublinear_tf=True)
+    return hstack([word.fit_transform(normalized), char.fit_transform(normalized)]).tocsr()
+
+
 def cluster_failures(
     df: pd.DataFrame, eps: float | None = None, min_samples: int | None = None
 ) -> tuple[list[FailureCluster], pd.DataFrame]:
-    """Cluster failed sessions by stack-trace similarity.
+    """Group failed sessions by root-cause **signature**, with a text fallback.
 
-    Returns the discovered clusters (largest first) and a copy of the failed-
-    sessions frame annotated with a ``cluster_id`` column. ``eps`` /
-    ``min_samples`` default to the tunables in ``config.settings``.
+    Stage 1 (deterministic): failures with a parseable stack trace are grouped by
+    fingerprint = ``Exception @ Class.method``. This is interpretable and robust
+    to volatile details (element ids, line numbers, timings).
+    Stage 2 (fallback): failures with no parseable trace are clustered by
+    TF-IDF + DBSCAN on their text. ``eps`` / ``min_samples`` default to settings.
+
+    Returns clusters (largest first) and the failed-sessions frame annotated with
+    a ``cluster_id`` column.
     """
     eps = settings.dbscan_eps if eps is None else eps
     min_samples = settings.dbscan_min_samples if min_samples is None else min_samples
@@ -114,75 +179,73 @@ def cluster_failures(
     failures = df[df["is_failure"] & df["reason"].str.len().gt(0)].copy()
     if failures.empty:
         return [], failures
+    failures = failures.reset_index(drop=True)
 
-    normalized = failures["reason"].map(_normalize).tolist()
+    reasons = failures["reason"].tolist()
+    normalized = [_normalize(r) for r in reasons]
+    fingerprints = [_fingerprint(r) for r in reasons]
+    # Combined word+char TF-IDF: powers both confidence and the text fallback.
+    matrix = _build_matrix(normalized)
 
-    # Single failure -> no clustering needed.
-    if len(normalized) == 1:
-        failures["cluster_id"] = 0
-        row = failures.iloc[0]
-        urls, versions = _cluster_extras(failures)
-        return (
-            [
-                FailureCluster(
-                    cluster_id=0,
-                    label=_cluster_label(row["reason"]),
-                    size=1,
-                    confidence=1.0,
-                    exception_type=_exception_type(row["reason"]),
-                    session_ids=[row["session_id"]],
-                    session_urls=urls,
-                    app_versions=versions,
-                    example_reason=row["reason"],
-                )
-            ],
-            failures,
+    cluster_key: list[int] = [-1] * len(failures)
+    next_id = 0
+
+    # --- Stage 1: exact fingerprint groups ---
+    sig_groups: dict[str, list[int]] = {}
+    fallback_idx: list[int] = []
+    for i, fp in enumerate(fingerprints):
+        if fp:
+            sig_groups.setdefault(fp, []).append(i)
+        else:
+            fallback_idx.append(i)
+    for _fp, idxs in sig_groups.items():
+        for i in idxs:
+            cluster_key[i] = next_id
+        next_id += 1
+
+    # --- Stage 2: DBSCAN fallback for un-fingerprinted (free-text) failures ---
+    if len(fallback_idx) == 1:
+        cluster_key[fallback_idx[0]] = next_id
+        next_id += 1
+    elif fallback_idx:
+        sub_labels = DBSCAN(eps=eps, min_samples=min_samples, metric="cosine").fit_predict(
+            matrix[fallback_idx]
         )
+        local: dict[int, int] = {}
+        for j, lab in zip(fallback_idx, sub_labels):
+            lab = int(lab)
+            if lab == -1:  # DBSCAN noise -> its own singleton cluster
+                cluster_key[j] = next_id
+                next_id += 1
+            elif lab in local:
+                cluster_key[j] = local[lab]
+            else:
+                local[lab] = next_id
+                cluster_key[j] = next_id
+                next_id += 1
 
-    vectorizer = TfidfVectorizer(
-        ngram_range=(1, 2),
-        analyzer="word",
-        min_df=1,
-        sublinear_tf=True,
-    )
-    matrix = vectorizer.fit_transform(normalized)
-
-    # Cosine distance = 1 - cosine similarity; DBSCAN with metric="cosine".
-    model = DBSCAN(eps=eps, min_samples=min_samples, metric="cosine")
-    raw_labels = model.fit_predict(matrix)
-
-    # DBSCAN marks singletons as -1 (noise). Re-map each noise point to its own
-    # unique cluster so nothing is silently dropped from the report.
-    labels = raw_labels.copy()
-    next_id = (labels.max() + 1) if labels.max() >= 0 else 0
-    for i, lab in enumerate(labels):
-        if lab == -1:
-            labels[i] = next_id
-            next_id += 1
-
-    failures = failures.copy()
-    failures["cluster_id"] = labels
+    failures["cluster_id"] = cluster_key
 
     clusters: list[FailureCluster] = []
-    for cid in sorted(set(labels)):
-        idx = np.where(labels == cid)[0]
+    for cid in sorted(set(cluster_key)):
+        idx = [i for i, k in enumerate(cluster_key) if k == cid]
         members = failures.iloc[idx]
-        # Confidence = mean pairwise cosine similarity within the cluster.
-        if len(idx) > 1:
+        representative = members.iloc[0]["reason"]
+        if matrix is not None and len(idx) > 1:
             sim = cosine_similarity(matrix[idx])
             iu = np.triu_indices_from(sim, k=1)
             confidence = float(sim[iu].mean())
         else:
-            confidence = 1.0  # a singleton is trivially self-consistent
-        representative = members.iloc[0]["reason"]
+            confidence = 1.0
+        fp = fingerprints[idx[0]]
         urls, versions = _cluster_extras(members)
         clusters.append(
             FailureCluster(
                 cluster_id=int(cid),
-                label=_cluster_label(representative),
-                size=int(len(idx)),
+                label=fp or _cluster_label(representative),
+                size=len(idx),
                 confidence=confidence,
-                exception_type=_exception_type(representative),
+                exception_type=_root_exception(representative),
                 session_ids=members["session_id"].tolist(),
                 session_urls=urls,
                 app_versions=versions,

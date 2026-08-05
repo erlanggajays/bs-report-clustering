@@ -43,12 +43,18 @@ def _fig_to_div(fig: go.Figure, div_id: str) -> str:
     )
 
 
+def _trim(text: str, limit: int = 58) -> str:
+    """Trim a label for axis display, keeping it readable (full text is on hover)."""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def _cluster_chart(clusters: list[FailureCluster]) -> str:
     if not clusters:
         return "<p class='empty'>No failures to cluster — suite is green. 🎉</p>"
     data = pd.DataFrame(
         {
-            "Root cause": [f"#{c.cluster_id}: {c.label[:48]}" for c in clusters],
+            "Root cause": [f"#{c.cluster_id}: {_trim(c.label)}" for c in clusters],
+            "Full": [f"#{c.cluster_id}: {c.label}" for c in clusters],
             "Failures": [c.size for c in clusters],
             "Confidence": [c.confidence for c in clusters],
         }
@@ -61,9 +67,15 @@ def _cluster_chart(clusters: list[FailureCluster]) -> str:
         color="Confidence",
         color_continuous_scale="Blues",
         range_color=(0, 1),
+        custom_data=["Full"],
         title="Failure clusters by size (color = clustering confidence)",
     )
-    fig.update_layout(yaxis=dict(autorange="reversed"), coloraxis_colorbar=dict(title="conf"))
+    # Full label on hover; automargin lets the y-axis expand to fit long labels.
+    fig.update_traces(hovertemplate="%{customdata[0]}<br>Failures: %{x}<extra></extra>")
+    fig.update_layout(
+        yaxis=dict(autorange="reversed", automargin=True),
+        coloraxis_colorbar=dict(title="conf"),
+    )
     return _fig_to_div(fig, "cluster-chart")
 
 
