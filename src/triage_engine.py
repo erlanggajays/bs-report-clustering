@@ -345,6 +345,33 @@ def _duration_cov(durations: np.ndarray) -> float:
     return float(np.clip(cov, 0.0, 1.0))
 
 
+def _shrink(raw_score: float, runs: int) -> float:
+    """Shrink a flakiness score toward 0 for small samples.
+
+    With 2 runs, one pass->fail flip already yields a 100% flip rate, which would
+    otherwise outrank a test proven flaky over 40 runs. The factor
+    ``runs / (runs + smoothing)`` discounts thin evidence without hiding it.
+    """
+    factor = runs / (runs + settings.flakiness_smoothing) if runs > 0 else 0.0
+    return float(np.clip(raw_score * factor, 0.0, 1.0))
+
+
+def _rank_flakiness(result: pd.DataFrame) -> pd.DataFrame:
+    """Well-evidenced scenarios first, then low-confidence ones; both by score.
+
+    Cross-build history is judged on the number of builds (too few builds means
+    run-over-run flakiness simply cannot be established); the single-build proxy
+    falls back to the session count.
+    """
+    if "builds" in result.columns:
+        result["low_sample"] = result["builds"] < settings.flakiness_min_builds
+    else:
+        result["low_sample"] = result["runs"] < settings.flakiness_min_runs
+    return result.sort_values(
+        ["low_sample", "flakiness_index"], ascending=[True, False]
+    ).reset_index(drop=True)
+
+
 def _flakiness_in_build(df: pd.DataFrame) -> pd.DataFrame:
     """In-build flakiness proxy (single build, no history).
 
@@ -352,54 +379,96 @@ def _flakiness_in_build(df: pd.DataFrame) -> pd.DataFrame:
     coefficient of variation. Used as a fallback until history accumulates.
     """
     def _score(group: pd.DataFrame) -> pd.Series:
+        n = len(group)
         fail_rate = group["is_failure"].mean()
         status_var = 4.0 * fail_rate * (1.0 - fail_rate)
         duration_var = _duration_cov(group["duration"].to_numpy(dtype=float))
-        score = 0.65 * status_var + 0.35 * duration_var
+        raw = float(np.clip(0.65 * status_var + 0.35 * duration_var, 0.0, 1.0))
         return pd.Series(
             {
-                "runs": len(group),
+                "runs": n,
                 "failure_rate": round(float(fail_rate), 3),
                 "duration_cov": round(duration_var, 3),
                 "flip_rate": 0.0,
-                "flakiness_index": round(float(np.clip(score, 0.0, 1.0)), 3),
+                "raw_flakiness": round(raw, 3),
+                "flakiness_index": round(_shrink(raw, n), 3),
             }
         )
 
     result = df.groupby("name").apply(_score, include_groups=False).reset_index()
-    return result.sort_values("flakiness_index", ascending=False).reset_index(drop=True)
+    # A mixed-dtype Series coerces counts to float; restore integers for display.
+    result["runs"] = result["runs"].astype(int)
+    return _rank_flakiness(result)
 
 
 def _flakiness_from_history(history: pd.DataFrame) -> pd.DataFrame:
     """True run-over-run flakiness using cross-build history.
 
-    The dominant signal is the *flip rate*: how often a scenario alternates
-    pass<->fail across consecutive builds. A test that flips a lot is flaky even
-    if its overall failure rate is moderate.
+    A scenario often produces *several* sessions inside one build — one per device,
+    or one per case in a data-driven test. Those are not sequential re-runs, so
+    counting pass<->fail transitions across raw sessions would invent "flips" that
+    are really just different cases. Instead we:
+
+      1. collapse each (scenario, build) to one outcome (failed if any session
+         failed), ordered by when the build ran;
+      2. measure ``flip_rate`` — pass<->fail alternation across *builds*, the
+         genuine run-over-run flakiness signal;
+      3. measure ``mixed_rate`` — the share of builds where the same scenario both
+         passed and failed, which flags device-specific or parameter-specific
+         instability rather than time-based flakiness.
     """
     def _score(group: pd.DataFrame) -> pd.Series:
-        ordered = group.sort_values("created_at")
-        fails = ordered["is_failure"].astype(int).to_numpy()
-        n = len(fails)
-        flips = int(np.abs(np.diff(fails)).sum()) if n > 1 else 0
-        flip_rate = flips / (n - 1) if n > 1 else 0.0
-        fail_rate = float(fails.mean()) if n else 0.0
+        n = len(group)
+        # 1. one row per build, chronologically.
+        per_build = (
+            group.groupby("build_id")
+            .agg(
+                any_fail=("is_failure", "max"),
+                all_fail=("is_failure", "min"),
+                first_seen=("created_at", "min"),
+            )
+            .sort_values("first_seen")
+        )
+        n_builds = len(per_build)
+        outcomes = per_build["any_fail"].astype(int).to_numpy()
+
+        # 2. cross-build alternation.
+        if n_builds > 1:
+            flips = int(np.abs(np.diff(outcomes)).sum())
+            flip_rate = flips / (n_builds - 1)
+        else:
+            flip_rate = 0.0  # undefined with a single build
+
+        # 3. within-build disagreement (some sessions passed, some failed).
+        mixed = (per_build["any_fail"].astype(int) - per_build["all_fail"].astype(int)) > 0
+        mixed_rate = float(mixed.mean()) if n_builds else 0.0
+
+        fail_rate = float(group["is_failure"].mean()) if n else 0.0
         status_var = 4.0 * fail_rate * (1.0 - fail_rate)
-        duration_var = _duration_cov(ordered["duration"].to_numpy(dtype=float))
-        score = 0.55 * flip_rate + 0.30 * status_var + 0.15 * duration_var
+        duration_var = _duration_cov(group["duration"].to_numpy(dtype=float))
+        raw = float(np.clip(
+            0.45 * flip_rate + 0.25 * mixed_rate + 0.20 * status_var + 0.10 * duration_var,
+            0.0, 1.0,
+        ))
+        # Shrink on the number of BUILDS: that is the evidence flakiness needs.
+        build_factor = n_builds / (n_builds + settings.flakiness_build_smoothing)
         return pd.Series(
             {
                 "runs": n,
-                "builds": int(ordered["build_id"].nunique()),
+                "builds": n_builds,
                 "failure_rate": round(fail_rate, 3),
                 "duration_cov": round(duration_var, 3),
                 "flip_rate": round(float(flip_rate), 3),
-                "flakiness_index": round(float(np.clip(score, 0.0, 1.0)), 3),
+                "mixed_rate": round(mixed_rate, 3),
+                "raw_flakiness": round(raw, 3),
+                "flakiness_index": round(float(np.clip(raw * build_factor, 0.0, 1.0)), 3),
             }
         )
 
     result = history.groupby("name").apply(_score, include_groups=False).reset_index()
-    return result.sort_values("flakiness_index", ascending=False).reset_index(drop=True)
+    # A mixed-dtype Series coerces counts to float; restore integers for display.
+    result[["runs", "builds"]] = result[["runs", "builds"]].astype(int)
+    return _rank_flakiness(result)
 
 
 def flakiness_index(
@@ -407,15 +476,12 @@ def flakiness_index(
 ) -> pd.DataFrame:
     """Per-scenario flakiness in [0, 1].
 
-    Uses cross-build history when available (>1 build) for a true flip-rate
-    signal; otherwise falls back to the single-build proxy.
+    Uses the per-build model whenever build ids are available — even for a single
+    build, where it honestly reports ``flip_rate`` 0 (run-over-run flakiness is
+    undefined) while still surfacing ``mixed_rate``. Only with no history at all
+    does it fall back to the single-build proxy.
     """
-    if (
-        history is not None
-        and not history.empty
-        and "build_id" in history
-        and history["build_id"].nunique() > 1
-    ):
+    if history is not None and not history.empty and "build_id" in history:
         return _flakiness_from_history(history)
     return _flakiness_in_build(df)
 

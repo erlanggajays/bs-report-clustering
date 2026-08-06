@@ -13,6 +13,36 @@ from ingestor import (
 )
 
 
+def test_extract_error_finds_buried_failure_not_teardown_noise():
+    """Regression: Appium logs a lot of ADB/proxy noise *after* a failure. The
+    extractor must return the real error, not the bookkeeping that follows it."""
+    from ingestor import _extract_error
+
+    noise = ("2026-08-05 03:48:18 - [x][ADB] Running '/usr/local/.browserstack/android-sdk/"
+             "platform-tools/adb -P 5037 -s RZCWC0TCQMP shell dumpsys window displays'")
+    error = ("2026-08-05 03:48:25 - [x][W3C] Encountered internal error running command: "
+             "NoSuchElementException: An element could not be located on the page")
+    proxy = ('2026-08-05 03:48:30 - [x] Proxying [POST /element] to [POST http://127.0.0.1:8201/'
+             'session/abc/element] with body: {"strategy":"xpath","selector":"//View"}')
+    raw = "\n".join([noise] * 20 + [error] + [proxy, noise] * 60)
+
+    extracted = _extract_error(raw)
+    assert "NoSuchElementException" in extracted
+    assert "dumpsys" not in extracted          # noise excluded
+    assert "Proxying" not in extracted
+
+
+def test_extract_error_prefers_most_specific_signal():
+    from ingestor import _extract_error
+
+    raw = "\n".join([
+        "some generic Error: whatever",
+        "Caused by: java.net.SocketTimeoutException: read timed out",
+        "2026-08-05 - [ADB] Getting focused package and activity",
+    ])
+    assert "SocketTimeoutException" in _extract_error(raw)
+
+
 def test_looks_like_crash():
     assert _looks_like_crash("FATAL EXCEPTION: main\n\tat com.gopay.Foo.bar(Foo.java:1)") is True
     assert _looks_like_crash("No crashes were detected for this session.") is False

@@ -78,8 +78,51 @@ def test_flakiness_flip_rate_from_history():
     })
     result = flakiness_index(hist, history=hist)
     row = result.loc[result.name == "FlakyTest"].iloc[0]
-    assert row["flip_rate"] == 1.0          # pass/fail/pass/fail = every transition flips
-    assert row["flakiness_index"] > 0.5
+    assert row["flip_rate"] == 1.0          # pass/fail/pass/fail = every build flips
+    assert row["builds"] == 4
+    assert row["raw_flakiness"] > 0.5       # strong raw signal
+    # 4 builds clears flakiness_min_builds, but scores are still shrunk.
+    assert bool(row["low_sample"]) is False
+    assert row["flakiness_index"] < row["raw_flakiness"]
+
+
+def test_repeats_within_one_build_are_not_counted_as_flips():
+    """A scenario repeated inside a single build (multi-device, or a data-driven
+    test) must not register as run-over-run flakiness — only as 'mixed'."""
+    rows = [
+        {"name": "Parameterised", "is_failure": f, "duration": 60.0 + i,
+         "build_id": "onlybuild", "created_at": f"2026-08-05T03:{i:02d}:00Z"}
+        # alternating pass/fail across 8 sessions in ONE build
+        for i, f in enumerate([False, True, False, True, False, True, False, True])
+    ]
+    hist = pd.DataFrame(rows)
+
+    row = flakiness_index(hist, history=hist).iloc[0]
+    assert row["runs"] == 8
+    assert row["builds"] == 1
+    assert row["flip_rate"] == 0.0      # undefined across a single build
+    assert row["mixed_rate"] == 1.0     # but it did both pass and fail in that build
+    assert bool(row["low_sample"]) is True
+
+
+def test_small_sample_cannot_outrank_well_sampled_flaky():
+    """A 2-session pass->fail flip maxes the flip rate; it must not outrank a
+    scenario proven flaky over many sessions."""
+    rows = []
+    for i, f in enumerate([False, True]):                      # 2 sessions
+        rows.append({"name": "TinySample", "is_failure": f, "duration": 40.0 + i,
+                     "build_id": f"b{i}", "created_at": f"2026-08-{i + 1:02d}"})
+    for i in range(20):                                        # 20 sessions, alternating
+        rows.append({"name": "ProvenFlaky", "is_failure": i % 2 == 0, "duration": 30.0 + (i % 5),
+                     "build_id": f"c{i}", "created_at": f"2026-07-{i + 1:02d}"})
+    hist = pd.DataFrame(rows)
+
+    result = flakiness_index(hist, history=hist)
+    assert result.iloc[0]["name"] == "ProvenFlaky"
+    assert bool(result.iloc[0]["low_sample"]) is False
+    tiny = result.loc[result.name == "TinySample"].iloc[0]
+    assert bool(tiny["low_sample"]) is True
+    assert tiny["flakiness_index"] < result.iloc[0]["flakiness_index"]
 
 
 def test_flakiness_falls_back_to_in_build(sample_df):

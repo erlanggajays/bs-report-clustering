@@ -285,17 +285,26 @@
       <div class="panel">
         <table>
           <thead><tr>
-            <th>Scenario</th><th>Runs</th><th>Failure rate</th>
-            <th>Flip rate</th><th>Duration CoV</th><th>Flakiness</th>
+            <th>Scenario</th>
+            <th title="Test sessions — one per device, per build">Sessions</th>
+            {% if flaky_source == 'history' %}<th title="Distinct builds this scenario appeared in">Builds</th>{% endif %}
+            <th>Failure rate</th>
+            <th title="Pass↔fail alternation across builds — true run-over-run flakiness">Flip rate</th>
+            {% if flaky_source == 'history' %}<th title="Share of builds where this scenario both passed and failed (device- or parameter-specific instability)">Mixed</th>{% endif %}
+            <th>Flakiness</th>
           </tr></thead>
           <tbody>
           {% for r in flaky_rows %}
             <tr>
-              <td>{{ r.name }}</td>
+              <td>
+                {{ r.name }}
+                {% if r.low_sample %}<span class="badge mid" title="Too few runs to be confident — score shrunk and ranked below well-sampled scenarios">low data</span>{% endif %}
+              </td>
               <td>{{ r.runs }}</td>
+              {% if flaky_source == 'history' %}<td>{{ r.builds }}</td>{% endif %}
               <td>{{ (r.failure_rate * 100) | round(0) }}%</td>
               <td>{{ (r.flip_rate * 100) | round(0) }}%</td>
-              <td>{{ r.duration_cov }}</td>
+              {% if flaky_source == 'history' %}<td>{{ (r.mixed_rate * 100) | round(0) }}%</td>{% endif %}
               <td style="min-width:140px">
                 <div class="bar"><span style="width: {{ (r.flakiness_index * 100) | round(0) }}%"></span></div>
                 <span class="note">{{ r.flakiness_index }}</span>
@@ -306,9 +315,20 @@
         </table>
         <p class="note" style="margin-top:8px">
           {% if flaky_source == 'history' %}
-            Flip rate = pass↔fail alternation across historical builds (the truest flakiness signal).
+            <strong>Sessions</strong> counts every execution of a scenario — one per device, and
+            one per case in a data-driven test — so a scenario can show many sessions inside a
+            single build. Because those are not sequential re-runs,
+            <strong>Flip rate</strong> is measured across <em>builds</em> (each build collapsed to
+            one outcome): that is genuine run-over-run flakiness.
+            <strong>Mixed</strong> is the share of builds where the scenario both passed and
+            failed — device- or parameter-specific instability rather than time-based flakiness.
+            Scores are shrunk toward 0 when few builds are available, and rows below
+            {{ min_builds }} builds are marked <em>low data</em> and ranked last, since flakiness
+            cannot be established from a single run.
           {% else %}
-            Single-build view — flip rate needs history; it populates once more builds are ingested.
+            Single-build view — <strong>Sessions</strong> counts one execution per device (and per
+            case in data-driven tests). Flip rate needs history across builds; it populates once
+            more builds are ingested.
           {% endif %}
         </p>
       </div>

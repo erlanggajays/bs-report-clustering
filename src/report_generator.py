@@ -16,6 +16,7 @@ import plotly.graph_objects as go
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from plotly.offline import get_plotlyjs
 
+from config import settings
 from exec_metrics import ExecMetrics
 from taxonomy import category_description
 from triage_engine import FailureCluster
@@ -251,6 +252,7 @@ def generate_report(
         clusters=[c.as_dict() for c in clusters],
         flaky_rows=flaky_rows,
         flaky_source=flaky_source,
+        min_builds=settings.flakiness_min_builds,
         cluster_chart=_cluster_chart(clusters),
         device_heatmap=_device_heatmap(device_risk),
         status_donut=_status_donut(metrics),

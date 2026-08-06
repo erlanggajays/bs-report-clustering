@@ -133,6 +133,18 @@ class Settings:
     device_min_sample_size: int = 5
     wilson_z: float = 1.96             # 95% confidence
 
+    # Flakiness needs evidence: with 2 runs a single pass->fail flip maxes out the
+    # flip rate, so tiny samples would dominate the ranking. Below min_runs a
+    # scenario is flagged low-confidence and ranked after well-sampled ones, and
+    # every score is shrunk toward 0 by runs/(runs+smoothing).
+    flakiness_min_runs: int = 5
+    flakiness_smoothing: float = 4.0
+    # True flakiness is a run-over-run (cross-build) property: a test repeated
+    # within one build is usually parameterised or multi-device, not flaky. Below
+    # this many builds the score is low-confidence and shrunk hard.
+    flakiness_min_builds: int = 3
+    flakiness_build_smoothing: float = 2.0
+
     # Historical persistence (SQLite) for cross-build flakiness and trends.
     # Paths are relative to the current working directory (resolved at use time),
     # so they are independent of where this module is installed.

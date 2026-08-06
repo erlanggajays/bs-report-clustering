@@ -41,6 +41,11 @@ _LOG_ENDPOINTS = {
 # Injected into log_text when a crashlog is present, so a taxonomy rule can match
 # it deterministically ("presence of crashlog => app crashed").
 CRASH_MARKER = "BROWSERSTACK_CRASHLOG_PRESENT"
+# Per-source cap when fetching logs. Generous on purpose: the failure must stay
+# inside the window for _extract_error to find it (see _fetch_session_logs).
+_LOG_FETCH_CAP = 200_000
+# How much of the log to persist on the row for the taxonomy classifier.
+_LOG_STORE_CHARS = 8_000
 
 logger = logging.getLogger(__name__)
 
@@ -271,13 +276,55 @@ def _fetch_sessions_for_build(build_id: str) -> list[dict[str, Any]]:
 
 _ERROR_LINE = re.compile(r"(Exception|Error|assert|FAIL|Traceback|Caused by)", re.I)
 
+# Appium/BrowserStack logs are mostly bookkeeping. These lines carry no failure
+# information and would otherwise be mistaken for the error.
+_LOG_NOISE = re.compile(
+    r"Proxying \[|Got response with status 200|Responding to client|Running '/usr/local"
+    r"|^\s*REQUEST \[|Plugin \w+ is now handling|jdwp-control|dumpsys"
+    r"|\[ADB\] Getting focused|Executing default handling|Waiting up to|Matched '/",
+    re.I,
+)
 
-def _extract_error(log_text: str, max_lines: int = 15, max_chars: int = 2000) -> str:
-    """Pull the most error-like slice out of a raw terminal log."""
-    lines = [ln for ln in log_text.splitlines() if ln.strip()]
-    hits = [ln for ln in lines if _ERROR_LINE.search(ln)]
-    chosen = hits[:max_lines] if hits else lines[-max_lines:]
-    return "\n".join(chosen)[:max_chars]
+# Ordered by specificity: the first group with a hit wins, and within it we take
+# the LAST occurrence, because the failure that ended the test is at the end.
+_ERROR_SIGNALS = [
+    re.compile(r"FATAL EXCEPTION|\bANR\b|SIGSEGV|signal 11", re.I),
+    re.compile(r"Caused by:", re.I),
+    re.compile(r"NoSuchElementException|no such element|could not be located"
+               r"|Element not found|can(?:no|')?t locate an element", re.I),
+    re.compile(r"AssertionError|AssertionFailedError|expected .*but was", re.I),
+    re.compile(r"SocketTimeoutException|ECONNRESET|Connection refused"
+               r"|internal server error|read timed out", re.I),
+    re.compile(r"EADDRINUSE|Could not configure Appium server", re.I),
+    re.compile(r"is still running after \d+ms", re.I),
+    re.compile(r"Encountered internal error", re.I),
+    re.compile(r"Could not start a new session|session not created", re.I),
+    re.compile(r"\b\w*(?:Exception|Error)\b:", re.I),
+]
+
+
+def _extract_error(log_text: str, context_lines: int = 6, max_chars: int = 2000) -> str:
+    """Pull the actual failure out of a raw Appium/terminal log.
+
+    Strategy: drop bookkeeping noise, then find the most *specific* error signal
+    (ordered list) and take its last occurrence plus a little following context.
+    Searching from the end matters — the failure that ended the test is there,
+    while the top of the log is session setup.
+    """
+    lines = [ln for ln in (log_text or "").splitlines() if ln.strip()]
+    signal_lines = [ln for ln in lines if not _LOG_NOISE.search(ln)]
+    if not signal_lines:
+        signal_lines = lines
+
+    for pattern in _ERROR_SIGNALS:
+        hits = [i for i, ln in enumerate(signal_lines) if pattern.search(ln)]
+        if hits:
+            start = hits[-1]
+            chosen = signal_lines[start : start + context_lines]
+            return "\n".join(chosen)[:max_chars]
+
+    # Nothing recognisable: the tail is still the best guess.
+    return "\n".join(signal_lines[-context_lines:])[:max_chars]
 
 
 def _looks_like_crash(text: str) -> bool:
@@ -296,6 +343,10 @@ def _fetch_session_logs(build_id: str, session_id: str, terminal_url: str) -> tu
     Returns (combined_text, crash_present). Each source is best-effort — a failed
     fetch is skipped, not fatal. Falls back to the signed terminal-log S3 URL only
     if no configured API source returned anything.
+
+    The text is kept whole (bounded by ``_LOG_FETCH_CAP``) rather than tail-trimmed:
+    Appium emits a lot of ADB/teardown noise *after* a failure, so a small tail
+    window would cut the actual error out and leave only bookkeeping.
     """
     parts: list[str] = []
     crash_present = False
@@ -314,14 +365,14 @@ def _fetch_session_logs(build_id: str, session_id: str, terminal_url: str) -> tu
                 if not _looks_like_crash(text):
                     continue
                 crash_present = True
-            parts.append(f"--- {src} ---\n{text[-6000:]}")
+            parts.append(f"--- {src} ---\n{text[-_LOG_FETCH_CAP:]}")
 
     if not parts and terminal_url:
         try:
             resp = requests.get(terminal_url, timeout=settings.request_timeout_seconds)
             resp.raise_for_status()
             if resp.text.strip():
-                parts.append(resp.text[-6000:])
+                parts.append(resp.text[-_LOG_FETCH_CAP:])
         except requests.RequestException:
             pass
 
@@ -342,8 +393,13 @@ def enrich_failure_reasons(df: pd.DataFrame) -> pd.DataFrame:
         if not combined:
             continue
         marker = f"{CRASH_MARKER}\n" if crash else ""
-        df.at[idx, "log_text"] = marker + combined[-8000:]  # marker kept at front
+        # Extract from the WHOLE log, but persist only a bounded tail. The error
+        # snippet is prepended so the classifier still sees it even if the stored
+        # tail is all teardown noise.
         snippet = _extract_error(combined)
+        df.at[idx, "log_text"] = (
+            marker + snippet + "\n" + combined[-_LOG_STORE_CHARS:]
+        )
         if snippet:
             df.at[idx, "reason"] = snippet
     return df

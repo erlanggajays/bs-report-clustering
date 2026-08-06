@@ -75,6 +75,22 @@ def _default_rules() -> list[Rule]:
              patterns=(r"while using the app", r"allow (only )?this time",
                        r"permissioncontroller", r"permission[_-]?allow", r"\ballow\b.*\bpermission\b"),
              description="Unhandled native OS permission dialog blocked the flow"),
+        # Appium could not stop/reset the app between tests. Seen in real GoPay
+        # logs as "'<package>' is still running after 500ms timeout".
+        Rule("app-lifecycle", "Infra / re-run",
+             patterns=(r"is still running after \d+\s*ms",
+                       r"(?:unable|failed) to (?:terminate|force.?stop|activate) .*app",
+                       r"app(?:lication)? did not (?:start|stop|terminate)",
+                       r"Encountered internal error running command.*still running"),
+             description="Appium could not stop/reset the app between tests"),
+        # Appium/driver server problems on the host — not the app under test.
+        Rule("appium-server-error", "Infra / re-run",
+             patterns=(r"EADDRINUSE", r"address already in use",
+                       r"Could not configure Appium server",
+                       r"a driver or plugin tried to update the server",
+                       r"uiautomator2 server .*(?:crash|not responding)",
+                       r"instrumentation process (?:crash|cannot be initialized)"),
+             description="Appium/driver server failure on the host (port clash, driver crash)"),
         Rule("webview-context", "Test automation",
              patterns=(r"NoSuchContextException", r"WEBVIEW_\S* is not available",
                        r"context .*not available", r"failed to (switch|attach).*context",
