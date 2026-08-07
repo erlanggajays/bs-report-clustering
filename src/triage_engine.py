@@ -24,7 +24,9 @@ from sklearn.cluster import DBSCAN
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+import inference
 from config import settings
+from features import extract_locator, extract_screen, feature_area
 from taxonomy import category_description, classify
 
 # Matches fully-qualified exception/error class names in a stack trace.
@@ -507,6 +509,15 @@ def classify_failures(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     ]
     failures["category"] = [c for c, _ in results]
     failures["owner"] = [o for _, o in results]
+    # Actionable atoms: which locator/screen the failure was looking for.
+    failures["locator"] = [
+        extract_locator(f"{r.get('reason','')}\n{r.get('log_text','')}")
+        for _, r in failures.iterrows()
+    ]
+    failures["screen"] = [
+        extract_screen(f"{r.get('reason','')}\n{r.get('log_text','')}")
+        for _, r in failures.iterrows()
+    ]
 
     breakdown = (
         failures.groupby(["category", "owner"]).size().reset_index(name="count")
@@ -516,12 +527,47 @@ def classify_failures(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return failures, breakdown
 
 
+def locator_hotspots(classified: pd.DataFrame, top: int = 10) -> pd.DataFrame:
+    """Rank failing UI locators by blast radius.
+
+    One broken locator often explains failures across many unrelated tests, which
+    makes it a higher-leverage fix than any individual test.
+    """
+    if classified.empty or "locator" not in classified:
+        return pd.DataFrame()
+    hits = classified[classified["locator"].astype(str).str.len() > 1]
+    if hits.empty:
+        return pd.DataFrame()
+    out = (
+        hits.groupby("locator")
+        .agg(
+            failures=("session_id", "count"),
+            tests_affected=("name", "nunique"),
+            devices=("device", "nunique"),
+            example_test=("name", "first"),
+        )
+        .reset_index()
+        .sort_values(["tests_affected", "failures"], ascending=False)
+        .head(top)
+        .reset_index(drop=True)
+    )
+    return out
+
+
 def run_triage(
     df: pd.DataFrame, history: pd.DataFrame | None = None
 ) -> dict[str, Any]:
     """Convenience wrapper returning every triage artifact in one dict."""
+    # Derive the business dimension before any inference runs on it.
+    df = df.copy()
+    df["feature_area"] = df["name"].map(feature_area)
+
     clusters, annotated = cluster_failures(df)
     classified, categories = classify_failures(df)
+
+    findings = inference.significant_findings(df)
+    cat_table, cat_p, cat_resid = inference.category_by_dimension(classified, "os_version")
+
     return {
         "clusters": clusters,
         "annotated_failures": annotated,
@@ -529,7 +575,64 @@ def run_triage(
         "flakiness": flakiness_index(df, history),
         "classified_failures": classified,
         "categories": categories,
+        # --- data-science layer ---
+        "feature_area_health": _feature_area_health(df),
+        "findings": findings,
+        "category_by_os": (cat_table, cat_p, cat_resid),
+        "locator_hotspots": locator_hotspots(classified),
+        "duration_outliers": inference.duration_outliers(df),
+        "time_split": inference.time_split(df),
+        # Always present on a multi-platform run so a combined pass rate can never
+        # hide one platform's regression behind the other's green.
+        "platform_breakdown": _platform_breakdown(df),
+        "area_by_platform": _area_by_platform(df),
     }
+
+
+def _platform_breakdown(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-platform (and per-project) pass/fail summary. Empty for a single platform."""
+    if "platform" not in df or df["platform"].nunique() < 2:
+        return pd.DataFrame()
+    group = ["platform"] + (["project"] if "project" in df else [])
+    out = (
+        df.groupby(group)
+        .agg(sessions=("session_id", "count"), failures=("is_failure", "sum"),
+             tests=("name", "nunique"))
+        .reset_index()
+    )
+    out["failure_rate"] = (out["failures"] / out["sessions"]).round(3)
+    return out.sort_values("failure_rate", ascending=False).reset_index(drop=True)
+
+
+def _area_by_platform(df: pd.DataFrame) -> pd.DataFrame:
+    """Failure rate per business area x platform — 'is this a product bug or a
+    platform bug?' answered for every area at once. Empty for a single platform.
+    """
+    if "platform" not in df or df["platform"].nunique() < 2 or "feature_area" not in df:
+        return pd.DataFrame()
+    pivot = df.pivot_table(
+        index="feature_area", columns="platform", values="is_failure", aggfunc="mean"
+    ).round(3)
+    counts = df.pivot_table(
+        index="feature_area", columns="platform", values="session_id", aggfunc="count"
+    )
+    # Drop cells with too little data to be worth showing.
+    pivot = pivot.where(counts >= settings.inference_min_group)
+    return pivot.dropna(how="all").reset_index()
+
+
+def _feature_area_health(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-business-area pass/fail summary, worst first."""
+    if "feature_area" not in df:
+        return pd.DataFrame()
+    out = (
+        df.groupby("feature_area")
+        .agg(sessions=("session_id", "count"), failures=("is_failure", "sum"),
+             tests=("name", "nunique"))
+        .reset_index()
+    )
+    out["failure_rate"] = (out["failures"] / out["sessions"]).round(3)
+    return out.sort_values("failure_rate", ascending=False).reset_index(drop=True)
 
 
 if __name__ == "__main__":

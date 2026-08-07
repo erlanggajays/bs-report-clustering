@@ -69,9 +69,14 @@ COLUMNS = [
     "status",
     "reason",
     "duration",
+    "platform",          # android / ios — free from the session payload's "os"
+    "project",           # owning BrowserStack project, for multi-project runs
     "os_version",
     "device",
     "app_version",
+    "app_filename",      # kept separate: mixing it into app_version broke version analysis
+    "browserstack_seconds",  # from insights: platform overhead
+    "user_seconds",          # from insights: time spent in the test itself
     "session_url",       # token-free deep link to the BrowserStack session
     "logs",
     "created_at",
@@ -105,6 +110,10 @@ def _sessions_to_dataframe(sessions: list[dict[str, Any]]) -> pd.DataFrame:
         app = s.get("app_details") or {}
         # Prefer the token-free browser_url; strip query params defensively.
         session_url = _strip_token(s.get("browser_url") or s.get("public_url", ""))
+        # BrowserStack "insights" splits the runtime into platform vs user time.
+        totals = (
+            ((s.get("insights") or {}).get("summary") or {}).get("totals") or {}
+        )
         rows.append(
             {
                 "session_id": s.get("hashed_id") or s.get("session_id", ""),
@@ -112,9 +121,16 @@ def _sessions_to_dataframe(sessions: list[dict[str, Any]]) -> pd.DataFrame:
                 "status": (s.get("status") or "unknown").lower(),
                 "reason": (s.get("reason") or "").strip(),
                 "duration": float(s.get("duration") or 0.0),
+                "platform": str(s.get("os") or "unknown").lower(),
+                "project": str(s.get("project_name") or ""),
                 "os_version": str(s.get("os_version") or "unknown"),
                 "device": s.get("device") or "unknown",
-                "app_version": str(app.get("app_version") or app.get("app_filename") or ""),
+                # Keep these distinct — falling back to the filename previously
+                # polluted app_version and made version correlation meaningless.
+                "app_version": str(app.get("app_version") or ""),
+                "app_filename": str(app.get("app_filename") or ""),
+                "browserstack_seconds": float(totals.get("browserstack_time") or 0.0),
+                "user_seconds": float(totals.get("user_time") or 0.0),
                 "session_url": session_url,
                 "logs": _strip_token(s.get("logs", "")),
                 "created_at": s.get("created_at", ""),
@@ -225,6 +241,41 @@ def get_latest_build_for_project(project_id: int) -> dict[str, Any]:
             settings.build_status_filter, chosen.get("status"),
         )
     return chosen
+
+
+def as_project_list(project: str | list[str] | None) -> list[str]:
+    """Normalise the --project input into a list of project names.
+
+    Accepts a single name, a comma-separated string, or a list (repeated flags).
+    """
+    if project is None:
+        project = settings.target_project
+    if isinstance(project, str):
+        project = project.split(",")
+    return [p.strip() for p in project if str(p).strip()]
+
+
+def _resolve_project_id(name: str) -> int:
+    """Project name -> id, honouring TARGET_PROJECT_ID for a single-project run."""
+    if settings.target_project_id and len(as_project_list(settings.target_project)) == 1:
+        return int(settings.target_project_id)
+    return get_project_id_by_name(name)
+
+
+def _combined_meta(metas: list[dict[str, Any]], projects: list[str]) -> dict[str, Any]:
+    """Fold several per-project build metas into one report header."""
+    if len(metas) == 1:
+        return metas[0]
+    return {
+        "project": " + ".join(projects),
+        "projects": projects,
+        "is_multi_project": True,
+        "name": f"{len(metas)} projects",
+        "hashed_id": ", ".join(str(m.get("hashed_id", ""))[:8] for m in metas),
+        "status": "combined",
+        "created_at": max((m.get("created_at", "") for m in metas), default=""),
+        "user_name": next((m.get("user_name", "") for m in metas if m.get("user_name")), ""),
+    }
 
 
 def get_recent_builds_for_project(project_id: int, last_n: int) -> list[dict[str, Any]]:
@@ -438,27 +489,38 @@ def ingest(
         sessions = payload["sessions"]
 
     elif source == "api":
-        # Resolve the project id (env-configured id short-circuits the lookup).
-        if settings.target_project_id:
-            project_id = int(settings.target_project_id)
-        else:
-            project_id = get_project_id_by_name(project)
-
-        build_meta = get_latest_build_for_project(project_id)
-        build_meta.setdefault("project", project)
-        build_meta.setdefault(
-            "user_name", username or _owner_from_build_name(build_meta.get("name", ""))
-        )
-        # Sessions are keyed by the build's hashed_id.
-        build_id = build_meta.get("hashed_id") or build_meta.get("build_id")
-        if not build_id:
-            raise IngestionError("Resolved build has no hashed_id; cannot fetch sessions.")
-        sessions = _fetch_sessions_for_build(build_id)
+        # One latest build per requested project, then combine.
+        projects = as_project_list(project)
+        frames: list[pd.DataFrame] = []
+        metas: list[dict[str, Any]] = []
+        for name in projects:
+            meta = get_latest_build_for_project(_resolve_project_id(name))
+            meta.setdefault("project", name)
+            meta.setdefault(
+                "user_name", username or _owner_from_build_name(meta.get("name", ""))
+            )
+            build_id = meta.get("hashed_id") or meta.get("build_id")
+            if not build_id:
+                raise IngestionError(f"Build for '{name}' has no hashed_id.")
+            part = _sessions_to_dataframe(_fetch_sessions_for_build(build_id))
+            if part.empty:
+                logger.warning("Project '%s' latest build had no sessions; skipping.", name)
+                continue
+            part["build_id"] = build_id
+            part.loc[part["project"] == "", "project"] = name
+            frames.append(part)
+            metas.append(meta)
+        if not frames:
+            raise IngestionError("No sessions found for the requested project(s).")
+        df = pd.concat(frames, ignore_index=True)
+        build_meta = _combined_meta(metas, projects)
+        sessions = []  # already normalised above
 
     else:
         raise ValueError(f"Unknown source '{source}'. Use 'file' or 'api'.")
 
-    df = _sessions_to_dataframe(sessions)
+    if source != "api":
+        df = _sessions_to_dataframe(sessions)
     if df.empty:
         raise IngestionError("Build contained zero sessions.")
 
@@ -492,38 +554,43 @@ def ingest_range(
     last_n = last_n or settings.default_last_n
     do_enrich = settings.enrich_failure_logs if enrich_logs is None else enrich_logs
 
+    projects = as_project_list(project)
+
     if source == "api":
-        project_id = (
-            int(settings.target_project_id)
-            if settings.target_project_id
-            else get_project_id_by_name(project)
-        )
-        builds = get_recent_builds_for_project(project_id, last_n)
         frames: list[pd.DataFrame] = []
-        for b in builds:
-            b.setdefault("project", project)
-            b.setdefault("user_name", username)
-            bid = b.get("hashed_id") or b.get("build_id")
-            if not bid:
-                continue
-            df = _sessions_to_dataframe(_fetch_sessions_for_build(bid))
-            if do_enrich:
-                df = enrich_failure_reasons(df)
-            if df.empty:
-                continue
-            df["build_id"] = bid
-            history.persist_build(b, df, db_path=settings.history_db_path)
-            frames.append(df)
-            logger.info("  + build %s… (%d sessions)", bid[:12], len(df))
+        for name in projects:
+            builds = get_recent_builds_for_project(_resolve_project_id(name), last_n)
+            logger.info("  project '%s': %d builds", name, len(builds))
+            for b in builds:
+                b.setdefault("project", name)
+                b.setdefault("user_name", username)
+                bid = b.get("hashed_id") or b.get("build_id")
+                if not bid:
+                    continue
+                part = _sessions_to_dataframe(_fetch_sessions_for_build(bid))
+                if do_enrich:
+                    part = enrich_failure_reasons(part)
+                if part.empty:
+                    continue
+                part["build_id"] = bid
+                part.loc[part["project"] == "", "project"] = name
+                history.persist_build(b, part, db_path=settings.history_db_path)
+                frames.append(part)
+                logger.info("    + build %s… (%d sessions)", bid[:12], len(part))
         if not frames:
             raise IngestionError("No sessions found across the selected builds.")
         combined = pd.concat(frames, ignore_index=True)
 
     elif source == "file":
-        combined = history.load_recent_sessions(
-            project, builds_window=last_n, db_path=settings.sample_history_db_path
-        )
-        if combined is None or combined.empty:
+        parts = [
+            history.load_recent_sessions(
+                p, builds_window=last_n, db_path=settings.sample_history_db_path
+            )
+            for p in projects
+        ]
+        parts = [p for p in parts if p is not None and not p.empty]
+        combined = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+        if combined.empty:
             raise IngestionError(
                 "No stored history. Seed it first: "
                 "python scripts/generate_mock_data.py --seed-history 8"
@@ -539,7 +606,9 @@ def ingest_range(
     date_from = dates[0][:10] if dates else ""
     date_to = dates[-1][:10] if dates else ""
     window_meta = {
-        "project": project,
+        "project": " + ".join(projects),
+        "projects": projects,
+        "is_multi_project": len(projects) > 1,
         "user_name": username,
         "name": f"Last {n_builds} builds",
         "hashed_id": f"{n_builds} builds · {date_from} → {date_to}",

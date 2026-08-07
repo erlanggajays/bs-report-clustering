@@ -51,6 +51,21 @@ def _fig_to_div(fig: go.Figure, div_id: str, **layout_overrides) -> str:
     )
 
 
+def _records(frame: pd.DataFrame | None, limit: int | None = None) -> list[dict]:
+    """DataFrame -> list of dicts for the template ([] when absent/empty)."""
+    if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
+        return []
+    out = frame.head(limit) if limit else frame
+    return out.to_dict(orient="records")
+
+
+def _platform_names(frame: pd.DataFrame | None) -> list[str]:
+    """Platform column names from the area x platform pivot (for table headers)."""
+    if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
+        return []
+    return [c for c in frame.columns if c != "feature_area"]
+
+
 def _trim(text: str, limit: int = 58) -> str:
     """Trim a label for axis display, keeping it readable (full text is on hover)."""
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -143,6 +158,24 @@ def _category_details(classified: pd.DataFrame | None) -> list[dict]:
     return out
 
 
+def _feature_area_chart(fa: pd.DataFrame | None) -> str:
+    if fa is None or fa.empty:
+        return ""
+    d = fa[fa["sessions"] >= 3].sort_values("failure_rate")
+    if d.empty:
+        return ""
+    fig = px.bar(
+        d, x="failure_rate", y="feature_area", orientation="h",
+        color="failure_rate", color_continuous_scale="Reds", range_color=(0, 1),
+        title="Failure rate by business area",
+        hover_data=["sessions", "failures", "tests"],
+    )
+    fig.update_layout(coloraxis_showscale=False)
+    return _fig_to_div(fig, "feature-area-chart",
+                       yaxis=dict(automargin=True, title=None),
+                       xaxis=dict(tickformat=".0%", title="failure rate"))
+
+
 def _device_heatmap(device_risk: pd.DataFrame) -> str:
     if device_risk.empty:
         return "<p class='empty'>No device data available.</p>"
@@ -216,6 +249,7 @@ def generate_report(
     trend: pd.DataFrame | None = None,
     categories: pd.DataFrame | None = None,
     classified: pd.DataFrame | None = None,
+    triage: dict | None = None,
 ) -> Path:
     """Render every artifact into a single standalone HTML file and return its path.
 
@@ -241,6 +275,7 @@ def generate_report(
         if categories is not None and not categories.empty
         else []
     )
+    ds = triage or {}
 
     html = template.render(
         plotly_js=get_plotlyjs(),
@@ -260,6 +295,17 @@ def generate_report(
         category_chart=_category_chart(categories),
         category_rows=category_rows,
         category_details=_category_details(classified),
+        # --- data-science layer ---
+        findings=_records(ds.get("findings")),
+        feature_area_chart=_feature_area_chart(ds.get("feature_area_health")),
+        feature_area_rows=_records(ds.get("feature_area_health")),
+        locator_rows=_records(ds.get("locator_hotspots")),
+        duration_rows=_records(ds.get("duration_outliers"), limit=6),
+        time_split=ds.get("time_split") or {},
+        alpha=settings.inference_alpha,
+        platform_rows=_records(ds.get("platform_breakdown")),
+        area_by_platform=_records(ds.get("area_by_platform")),
+        platforms=_platform_names(ds.get("area_by_platform")),
     )
 
     out = Path(output_path or _DEFAULT_OUTPUT)

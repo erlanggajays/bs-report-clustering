@@ -122,6 +122,19 @@ class Settings:
     taxonomy_config_path: str = field(
         default_factory=lambda: os.environ.get("FAILURE_TAXONOMY_PATH", "config/taxonomy.json")
     )
+    # Feature-area keyword map (business domains derived from test names). An
+    # optional JSON file overrides/extends the code defaults in features.py.
+    feature_areas_path: str = field(
+        default_factory=lambda: os.environ.get("FEATURE_AREAS_PATH", "config/feature_areas.json")
+    )
+
+    # Statistical inference: significance threshold, and the smallest group we are
+    # willing to draw a conclusion from.
+    inference_alpha: float = field(
+        default_factory=lambda: float(os.environ.get("INFERENCE_ALPHA", "0.05"))
+    )
+    inference_min_group: int = 5
+
     # A "failed" session shorter than this almost certainly aborted before running
     # (app install / session start), not a real test failure.
     min_valid_test_seconds: float = field(

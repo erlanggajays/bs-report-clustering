@@ -54,6 +54,7 @@
     .v.good { color: var(--good); } .v.bad { color: var(--bad); } .v.warn { color: var(--warn); }
     section { margin-top: 34px; }
     section h2 { font-size: 16px; margin: 0 0 14px; }
+    h3.sub-h { font-size: 13px; margin: 0 0 8px; color: var(--ink); }
     .panel { background: var(--card); border: 1px solid var(--line);
       border-radius: var(--radius); padding: 18px 20px; min-width: 0; overflow: hidden; }
     /* minmax(0,…) lets columns shrink below their content so a wide Plotly chart
@@ -92,6 +93,13 @@
     details.cat > summary .cat-count { width: 52px; text-align: right; color: var(--muted);
       flex: none; }
     .cat-desc { margin: 0 10px 6px 28px; font-size: 12px; color: var(--muted); font-style: italic; }
+    /* Statistical findings */
+    .finding { padding: 12px 0; border-bottom: 1px solid var(--line); }
+    .finding:last-of-type { border-bottom: none; }
+    .f-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+    .f-body { font-size: 13px; color: #374151; }
+    .f-note { margin-top: 6px; font-size: 12px; color: var(--warn); }
+    .mono { font-family: ui-monospace, Menlo, monospace; }
     ul.cat-tests { list-style: none; margin: 0 0 8px; padding: 2px 10px 2px 28px; }
     ul.cat-tests li { display: flex; align-items: baseline; gap: 8px; padding: 5px 0;
       font-size: 13px; border-top: 1px dashed var(--line); min-width: 0; flex-wrap: wrap; }
@@ -171,6 +179,84 @@
         <div class="note">via root-cause grouping</div></div>
     </div>
 
+    <!-- Cross-platform view (only on a multi-project run) -->
+    {% if platform_rows %}
+    <section>
+      <h2>Platform breakdown</h2>
+      <div class="grid two-col">
+        <div class="panel">
+          <table>
+            <thead><tr><th>Platform</th><th>Project</th><th>Sessions</th><th>Tests</th><th>Failure rate</th></tr></thead>
+            <tbody>
+            {% for p in platform_rows %}
+              <tr>
+                <td><strong>{{ p.platform }}</strong></td>
+                <td>{{ p.project or '—' }}</td>
+                <td>{{ p.sessions }}</td>
+                <td>{{ p.tests }}</td>
+                <td><span class="badge {{ 'hi' if p.failure_rate >= 0.3 else 'mid' if p.failure_rate >= 0.15 else 'lo' }}">{{ (p.failure_rate * 100) | round(1) }}%</span></td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+          <p class="note">Shown separately so a combined pass rate can never hide one platform's regression behind the other's green.</p>
+        </div>
+        {% if area_by_platform %}
+        <div class="panel">
+          <h3 class="sub-h">Business area × platform</h3>
+          <table>
+            <thead><tr><th>Area</th>{% for p in platforms %}<th>{{ p }}</th>{% endfor %}</tr></thead>
+            <tbody>
+            {% for r in area_by_platform %}
+              <tr>
+                <td>{{ r.feature_area }}</td>
+                {% for p in platforms %}
+                  <td>{% if r[p] is not none %}{{ (r[p] * 100) | round(0) }}%{% else %}—{% endif %}</td>
+                {% endfor %}
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+          <p class="note">A gap between platforms for the same area points to a platform-specific defect; a high rate on both points to the product.</p>
+        </div>
+        {% endif %}
+      </div>
+    </section>
+    {% endif %}
+
+    <!-- Statistical findings: only associations that clear significance -->
+    {% if findings %}
+    <section>
+      <h2>Statistical findings</h2>
+      <div class="panel">
+        {% for f in findings %}
+        <div class="finding">
+          <div class="f-head">
+            <span class="badge hi">{{ f.odds_ratio }}× more likely</span>
+            <strong>{{ f.dimension }} = {{ f.level }}</strong>
+          </div>
+          <div class="f-body">
+            <strong>{{ (f.failure_rate * 100) | round(1) }}%</strong> failure rate vs
+            <strong>{{ (f.baseline_rate * 100) | round(1) }}%</strong> elsewhere
+            ({{ f.failures }}/{{ f.sessions }} sessions) ·
+            95% CI {{ f.ci_low }}–{{ f.ci_high }} ·
+            <span class="mono">p = {{ '%.4f' | format(f.p_value) }}</span>
+            {% if f.confounded_with %}
+            <div class="f-note">⚠ Same sessions as <strong>{{ f.confounded_with }}</strong> —
+              these describe one environment, not separate problems.</div>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+        <p class="note">
+          Fisher's exact test, one level vs all others, α = {{ alpha }}. Only associations
+          where failures are <em>above</em> baseline are shown. The odds ratio is the effect
+          size; a confidence interval spanning 1 would not be significant.
+        </p>
+      </div>
+    </section>
+    {% endif %}
+
     <!-- Charts -->
     <section>
       <div class="grid two-col">
@@ -193,6 +279,53 @@
     {% if trend_chart %}
     <section>
       <div class="panel">{{ trend_chart | safe }}</div>
+    </section>
+    {% endif %}
+
+    <!-- Business-area health + actionable atoms -->
+    {% if feature_area_rows or locator_rows or duration_rows %}
+    <section>
+      <h2>Where failures concentrate</h2>
+      <div class="grid two-col">
+        {% if feature_area_chart %}<div class="panel">{{ feature_area_chart | safe }}</div>{% endif %}
+        <div class="panel">
+          {% if locator_rows %}
+          <h3 class="sub-h">Locator hotspots</h3>
+          <table>
+            <thead><tr><th>Locator</th><th>Tests hit</th><th>Failures</th></tr></thead>
+            <tbody>
+            {% for l in locator_rows %}
+              <tr><td class="reason">{{ l.locator }}</td><td>{{ l.tests_affected }}</td><td>{{ l.failures }}</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+          <p class="note">One broken locator can explain failures across unrelated tests — fixing it has the widest blast radius.</p>
+          {% endif %}
+          {% if duration_rows %}
+          <h3 class="sub-h" style="margin-top:16px">Runtime outliers</h3>
+          <table>
+            <thead><tr><th>Scenario</th><th>Median</th><th>Slowest</th><th>×</th></tr></thead>
+            <tbody>
+            {% for d in duration_rows %}
+              <tr>
+                <td>{{ d.name[:60] }}</td>
+                <td>{{ d.median_seconds }}s</td>
+                <td>{{ d.slowest_seconds }}s</td>
+                <td><span class="badge mid">{{ d.ratio }}×</span></td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+          <p class="note">Median/MAD modified z-score — robust to the outlier itself. A large ratio suggests a hang or retry.</p>
+          {% endif %}
+          {% if time_split %}
+          <p class="note" style="margin-top:12px">
+            Runtime split: <strong>{{ time_split.browserstack_pct }}%</strong> BrowserStack
+            platform vs <strong>{{ time_split.user_pct }}%</strong> your test code.
+          </p>
+          {% endif %}
+        </div>
+      </div>
     </section>
     {% endif %}
 

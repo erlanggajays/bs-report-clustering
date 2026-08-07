@@ -12,13 +12,18 @@ import logging
 import sys
 
 from config import settings
-from ingestor import ingest, ingest_range, IngestionError
+from ingestor import as_project_list, ingest, ingest_range, IngestionError
 from triage_engine import run_triage
 from exec_metrics import compute_exec_metrics
 from report_generator import generate_report
 import history
 
 logger = logging.getLogger("bsanalytics")
+
+
+def project_label(build_meta: dict, args) -> str:
+    """Project string used for history lookups and the report header."""
+    return build_meta.get("project") or " + ".join(args.project)
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -34,7 +39,14 @@ def _configure_logging(verbose: bool) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="BrowserStack test analytics pipeline.")
     parser.add_argument("--user", default=settings.target_user)
-    parser.add_argument("--project", default=settings.target_project)
+    parser.add_argument(
+        "--project",
+        action="append",
+        default=None,
+        help=("BrowserStack project name. Repeat the flag (or pass a comma-separated "
+              "list) to combine platforms into one cross-platform report, e.g. "
+              "--project 'Finserv - Gopay Android' --project 'Finserv - Gopay iOS'."),
+    )
     parser.add_argument("--source", choices=["file", "api"], default="file")
     parser.add_argument(
         "--mode",
@@ -62,6 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _configure_logging(args.verbose)
+    # Normalise --project (repeatable and/or comma-separated) into a list.
+    args.project = as_project_list(args.project)
 
     enrich = True if args.enrich_logs else None
     db_path = settings.history_db_for(args.source)
@@ -70,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.mode == "range":
             logger.info(
                 "[1/4] Ingesting last %d builds for project '%s' (source=%s)…",
-                args.last, args.project, args.source,
+                args.last, " + ".join(args.project), args.source,
             )
             df, build_meta = ingest_range(
                 args.user, source=args.source, project=args.project,
@@ -85,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             logger.info(
                 "[1/4] Ingesting latest build for project '%s' (source=%s)…",
-                args.project, args.source,
+                " + ".join(args.project), args.source,
             )
             df, build_meta = ingest(
                 args.user, source=args.source, mock_path=args.mock_path,
@@ -98,16 +112,22 @@ def main(argv: list[str] | None = None) -> int:
             )
             logger.info("      %d sessions · %d failures", len(df), int(df["is_failure"].sum()))
             history.persist_build(build_meta, df, db_path=db_path)
-            hist = history.load_recent_sessions(build_meta.get("project", args.project), db_path=db_path)
+            hist = history.load_recent_sessions(project_label(build_meta, args), db_path=db_path)
             if hist is not None and not hist.empty:
                 logger.info("      history: %d builds available", hist["build_id"].nunique())
 
-        project_name = build_meta.get("project", args.project)
+        project_name = project_label(build_meta, args)
         trend = history.suite_health_trend(project_name, db_path=db_path)
 
         logger.info("[2/4] Running ML/NLP triage…")
         triage = run_triage(df, history=hist)
         logger.info("      %d root-cause clusters discovered", len(triage["clusters"]))
+        for f in triage["findings"].head(3).itertuples():
+            logger.info(
+                "      finding: %s=%s %.0f%% vs %.0f%% baseline (OR %.1fx, p=%.4f)",
+                f.dimension, f.level, f.failure_rate * 100, f.baseline_rate * 100,
+                f.odds_ratio, f.p_value,
+            )
 
         logger.info("[3/4] Computing executive metrics…")
         metrics = compute_exec_metrics(df, triage["clusters"], triage["device_anomaly"])
@@ -121,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
             is_sample=(args.source == "file"), trend=trend,
             categories=triage["categories"],
             classified=triage["classified_failures"],
+            triage=triage,
         )
         logger.info("\n✅ Report: %s", path)
         return 0

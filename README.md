@@ -56,6 +56,32 @@ mypy src                   # type-check
 
 CI (`.github/workflows/ci.yml`) runs all three across Python 3.10–3.12 on every push/PR.
 
+## Platforms: separate or combined
+
+Default is **one project per run** — a clean per-platform CI gate:
+
+```bash
+python main.py --source api --project "Finserv - Gopay Android"
+python main.py --source api --project "Finserv - Gopay iOS"
+```
+
+Repeat `--project` (or pass a comma-separated list) for a **cross-platform report**,
+which makes `platform` an attribution dimension:
+
+```bash
+python main.py --source api \
+  --project "Finserv - Gopay Android" --project "Finserv - Gopay iOS"
+```
+
+Combined mode adds a **platform breakdown** (always shown separately, so one
+platform's regression can never hide behind the other's green) and a
+**business area × platform** table. A gap for the same area between platforms
+points to a platform-specific defect; a high rate on both points to the product.
+
+> `platform` is read from each session's `os` field, so it needs no configuration.
+> Note the taxonomy rules are currently Android-flavoured (uiautomator2/ADB
+> vocabulary); iOS failures will land in `uncategorized` until iOS rules are added.
+
 ## Analysis modes
 
 | Mode | Command | What it analyzes |
@@ -107,6 +133,12 @@ so demo data never pollutes real history. Seed demo history with
 
 ## Report contents
 
+- **Statistical findings** — associations that clear significance (Fisher's exact,
+  one level vs rest) with odds ratio + 95% CI. Confounded dimensions (a device that
+  maps 1:1 to an OS version) are collapsed to one finding rather than double-counted.
+- **Where failures concentrate** — failure rate by **business area** (derived from
+  test names), **locator hotspots** (one broken locator often explains many tests),
+  and **runtime outliers** (median/MAD, robust to the outlier itself).
 - **Executive cards** — total tests, suite health, pass rate, root causes, MTTR saved.
 - **Pass/fail donut** + **device/OS heatmap** (Wilson-scored, small samples flagged).
 - **Suite pass-rate trend** across historical builds.
