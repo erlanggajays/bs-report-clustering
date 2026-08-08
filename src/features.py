@@ -52,15 +52,28 @@ _CAMEL_SPLIT = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 def _split_camel(text: str) -> str:
     return _CAMEL_SPLIT.sub(" ", text or "")
 
-# Locator strategies seen in real Appium/Selenium failures.
+# Locator extraction targets the SEMANTIC value a test was looking for (the
+# accessibility label, text, or resource id) — never the xpath scaffolding around
+# it. Two tests hunting "Mutual Fund" via different strategies describe the same
+# broken element, so they must group together; grouping on the raw selector string
+# would instead merge unrelated elements that share an xpath prefix.
 _LOCATOR_PATTERNS = [
-    re.compile(r"accessibilityId\s*[:=]\s*['\"]?([^'\"\]\}\)]{2,60})"),
-    re.compile(r"content-desc\s*[,=]\s*['\"]([^'\"]{2,60})['\"]"),
-    re.compile(r"@content-desc\s*=\s*['\"]([^'\"]{2,60})['\"]"),
-    re.compile(r"\bid\s*[:=]\s*['\"]?([A-Za-z_][\w./]{2,60})"),
-    re.compile(r"selector\"\s*:\s*\"([^\"]{4,120})\""),
-    re.compile(r"locate element\s*[:\-]?\s*\{?\s*([^\s\}]{3,60})"),
+    # xpath predicates: [@content-desc="X"], [contains(@text, "X")], [@resource-id="X"]
+    re.compile(r"(?:contains\s*\(\s*)?@(?:content-desc|text|resource-id|name|label)"
+               r"\s*(?:,|=)\s*[\"']([^\"']{2,80})[\"']"),
+    # Appium accessibility id, incl. By.chained({AppiumBy.accessibilityId: X})
+    re.compile(r"accessibilityId\s*[:=]\s*[\"']?([^\"'\]\}\),]{2,80})"),
+    re.compile(r"accessibility\s+id\s*[:=,]\s*[\"']([^\"']{2,80})[\"']"),
+    # resource/element id references
+    re.compile(r"\bid\s*[:=]\s*[\"']?([A-Za-z_][\w./]{2,60})"),
+    # last resort: a quoted string inside an "unable to locate element" message
+    re.compile(r"locate element[^\"']{0,40}[\"']([^\"']{2,80})[\"']"),
 ]
+# Values that are identifiers rather than human-meaningful locators. Grouping on
+# these is worthless: every session has a different one.
+_LOCATOR_REJECT = re.compile(
+    r"^(?:[0-9a-f]{8}-|[0-9a-f]{12,}$|0x|\d+$|null$|undefined$|true$|false$)", re.I
+)
 _SCREEN_RE = re.compile(r"\b([A-Z][A-Za-z0-9]*(?:Activity|Screen|Page|Fragment))\b")
 
 _AREAS: list[tuple[str, re.Pattern]] | None = None
@@ -102,17 +115,43 @@ def feature_area(test_name: str) -> str:
     return "unmapped"
 
 
+_BRACKET_PAIRS = {")": "(", "]": "[", "}": "{"}
+
+
+def _trim_delimiters(value: str) -> str:
+    """Strip surrounding delimiters without mangling the value.
+
+    Only *unbalanced* brackets are removed, so a legitimate label such as
+    "Estimated final balance (net)" keeps its closing parenthesis while scaffolding
+    like "Mutual Fund)]" loses it.
+    """
+    value = value.strip().strip("'\"[]{},:; \\")
+    while value and value[-1] in _BRACKET_PAIRS:
+        closer, opener = value[-1], _BRACKET_PAIRS[value[-1]]
+        if value.count(closer) <= value.count(opener):
+            break
+        value = value[:-1]
+    return value.strip()
+
+
 def extract_locator(text: str, max_len: int = 70) -> str:
-    """The UI locator a failure was looking for, or "" if not identifiable."""
+    """The semantic UI target a failure was looking for, or "" if not identifiable.
+
+    Returns the accessibility label / text / id itself — not the surrounding xpath —
+    so the same broken element groups together regardless of locator strategy.
+    Identifier-like values (UUIDs, hex, bare numbers) are rejected because they
+    differ every session and would fragment the grouping.
+    """
     if not text:
         return ""
+    # Appium logs embed selectors in JSON, so quotes arrive backslash-escaped.
+    unescaped = text.replace('\\"', '"').replace("\\'", "'")
     for pattern in _LOCATOR_PATTERNS:
-        m = pattern.search(text)
-        if m:
-            value = " ".join(m.group(1).split())  # collapse whitespace
-            value = value.strip("'\"[]{}(),:; ")
-            if len(value) >= 2:
-                return value[:max_len]
+        for m in pattern.finditer(unescaped):
+            value = _trim_delimiters(" ".join(m.group(1).split()))
+            if len(value) < 2 or _LOCATOR_REJECT.search(value):
+                continue
+            return value[:max_len]
     return ""
 
 

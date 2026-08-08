@@ -71,17 +71,29 @@ def _trim(text: str, limit: int = 58) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _cluster_chart(clusters: list[FailureCluster]) -> str:
+def _cluster_chart(clusters: list[FailureCluster], top: int = 12) -> str:
     if not clusters:
         return "<p class='empty'>No failures to cluster — suite is green. 🎉</p>"
-    data = pd.DataFrame(
+    # Clusters arrive largest-first. Chart the meaningful ones and roll the long
+    # tail of one-off failures into a single bar, so it can't dominate the axis.
+    head, tail = clusters[:top], clusters[top:]
+    rows = [
         {
-            "Root cause": [f"#{c.cluster_id}: {_trim(c.label)}" for c in clusters],
-            "Full": [f"#{c.cluster_id}: {c.label}" for c in clusters],
-            "Failures": [c.size for c in clusters],
-            "Confidence": [c.confidence for c in clusters],
+            "Root cause": f"#{c.cluster_id}: {_trim(c.label)}",
+            "Full": f"#{c.cluster_id}: {c.label}",
+            "Failures": c.size,
+            "Confidence": c.confidence,
         }
-    )
+        for c in head
+    ]
+    if tail:
+        rows.append({
+            "Root cause": f"+ {len(tail)} smaller clusters",
+            "Full": f"{len(tail)} clusters of {sum(c.size for c in tail)} failures total",
+            "Failures": sum(c.size for c in tail),
+            "Confidence": 0.0,
+        })
+    data = pd.DataFrame(rows)
     fig = px.bar(
         data,
         x="Failures",

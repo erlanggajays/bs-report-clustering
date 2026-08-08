@@ -332,8 +332,11 @@ _ERROR_LINE = re.compile(r"(Exception|Error|assert|FAIL|Traceback|Caused by)", r
 _LOG_NOISE = re.compile(
     r"Proxying \[|Got response with status 200|Responding to client|Running '/usr/local"
     r"|^\s*REQUEST \[|Plugin \w+ is now handling|jdwp-control|dumpsys"
-    r"|\[ADB\] Getting focused|Executing default handling|Waiting up to|Matched '/",
-    re.I,
+    r"|\[ADB\] Getting focused|Executing default handling|Waiting up to|Matched '/"
+    # HTTP wire traffic and device-log hex dumps carry no diagnostic value and
+    # previously became the "error", producing one junk cluster per session.
+    r"|\[HTTP\] (?:<--|-->)|/wd/hub|^0{8,}:\s|\[HTTP\] Request idempotency",
+    re.I | re.M,
 )
 
 # Ordered by specificity: the first group with a hit wins, and within it we take

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from ingestor import _sessions_to_dataframe
 from triage_engine import (
     _exception_type,
     _fingerprint,
@@ -29,6 +30,68 @@ def test_clustering_groups_by_signature(sample_df):
     labels = {c.label for c in clusters}
     assert "NoSuchElementException @ PaymentConfirmScreen.tapConfirm" in labels
     assert "SocketTimeoutException @ WalletApiClient.getBalance" in labels
+
+
+def test_helper_function_is_not_mistaken_for_exception_class():
+    """Regression: 'at Object.errorWithException(logging.js)' is a helper function.
+    Matching the capital inside it produced the nonsense class 'WithException'."""
+    from triage_engine import _root_exception
+
+    text = ("Error: 'com.gojek.gopay' is still running after 500ms timeout\n"
+            "    at Object.errorWithException (/nix/store/appium/logging.js:78:66)")
+    assert _root_exception(text) == ""
+    # A real qualified class is still detected.
+    assert _root_exception("java.net.SocketTimeoutException: x") == "SocketTimeoutException"
+
+
+def test_cluster_label_is_not_a_masked_timestamp():
+    """Regression: labels came out as 'NUM - NUM - NUM NUM LINE LINE' because the
+    log-line timestamp prefix was being masked instead of the error text."""
+    from triage_engine import _fingerprint
+
+    reason = ("2026-08-05 03:48:25:900 - [360ce769][W3C] Encountered internal error running "
+              "command: NoSuchElementError: An element could not be located on the page")
+    fp = _fingerprint(reason)
+    assert fp.startswith("NoSuchElementError")
+    assert "NUM" not in fp and "LINE" not in fp
+
+
+def test_signal_free_text_is_not_clustered_as_a_root_cause():
+    """Appium bookkeeping has endless variants; a blocklist could not keep up, so
+    grouping is driven by the *absence* of any error signal."""
+    from triage_engine import _HAS_ERROR_SIGNAL
+
+    for noise in ('Calling AppiumDriver.execute() with args: ["mobile: getCurrentActivity"]',
+                  "Clearing new command timeout pre-emptively since plugin(s) will handle",
+                  '"0000000000000000: 00000002 00000000 00010000 0001 01 31685 @GNSSND"'):
+        assert not _HAS_ERROR_SIGNAL.search(noise), noise
+    for real in ("NoSuchElementError: An element could not be located on the page",
+                 "Error: 'com.gopay' is still running after 500ms timeout",
+                 "Error: listen EADDRINUSE: address already in use 0.0.0.0:38081"):
+        assert _HAS_ERROR_SIGNAL.search(real), real
+
+
+def test_http_noise_failures_share_one_cluster():
+    """Regression: HTTP wire logs have unique timestamps/session ids, so each became
+    its own cluster (16 junk singletons) and buried the real root causes."""
+    raw = [
+        {"hashed_id": f"n{i}", "name": f"test{i}", "status": "failed", "duration": 30,
+         "os_version": "14.0", "device": "S24", "created_at": "t",
+         "reason": f"2026-08-05 04:{i:02d}:15 - [c31f2af{i}][HTTP] <-- POST /wd/hub/session/x{i}/element"}
+        for i in range(12)
+    ]
+    raw += [
+        {"hashed_id": f"e{i}", "name": f"real{i}", "status": "failed", "duration": 30,
+         "os_version": "14.0", "device": "S24", "created_at": "t",
+         "reason": (f"2026-08-05 03:48:25 - [abc][W3C] NoSuchElementError: could not locate item{i}"
+                    "\n\tat com.gopay.ui.Screen.find(S:1)")}
+        for i in range(3)
+    ]
+    clusters, _ = cluster_failures(_sessions_to_dataframe(raw))
+    assert len(clusters) == 2
+    labels = {c.label for c in clusters}
+    assert any("No diagnostic error" in x for x in labels)
+    assert "NoSuchElementError @ Screen.find" in labels
 
 
 def test_fingerprint_prefers_app_frame_and_deepest_cause():

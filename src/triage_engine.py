@@ -29,10 +29,42 @@ from config import settings
 from features import extract_locator, extract_screen, feature_area
 from taxonomy import category_description, classify
 
-# Matches fully-qualified exception/error class names in a stack trace.
-_EXCEPTION_RE = re.compile(r"([A-Za-z_][\w.]*(?:Exception|Error|Failure|Timeout))")
+# Exception/error CLASS names. The final segment must start with a capital, so
+# helper functions such as "Object.errorWithException" are not mistaken for the
+# exception type (a real bug seen in Appium logs).
+# The (?<![\w$]) guard is essential: without it the capital inside
+# "errorWithException" matches and yields the nonsense class "WithException".
+_EXCEPTION_RE = re.compile(
+    r"(?<![\w$])(?:[A-Za-z_][\w.$]*\.)?([A-Z]\w*(?:Exception|Error|Failure|Timeout))\b"
+)
+# Appium/BrowserStack log lines start with a timestamp and bracketed tags, e.g.
+# "2026-08-05 04:51:22:421 - [cdea8165][HTTP] ". Stripping that prefix before
+# building a signature stops masked timestamps ("NUM - NUM LINE") from becoming
+# the cluster label.
+_LOG_PREFIX_RE = re.compile(
+    r"^\s*(?:\d{4}-\d{1,2}-\d{1,2}[ T]\d{1,2}:\d{2}:\d{2}(?:[:.]\d+)?)?\s*-?\s*"
+    r"(?:\[[^\]]{1,48}\]\s*)*"
+)
+# Whether a failure text contains ANY recognisable error signal. Testing for the
+# presence of a signal is far more robust than blocklisting noise phrases: Appium
+# emits endless bookkeeping variants ("Calling AppiumDriver.execute() with args",
+# "Clearing new command timeout", logcat hex dumps), and each new one would
+# otherwise become its own bogus cluster.
+_HAS_ERROR_SIGNAL = re.compile(
+    r"(?<![\w$])[A-Z]\w*(?:Exception|Error|Failure)\b"   # a real exception class
+    r"|\bError\s*:|\bFATAL\b|\bANR\b|\bassert"
+    r"|\bfailed\b|\bcould not\b|\bunable to\b|\bnot found\b|\bcannot\b"
+    r"|\btimed out\b|EADDRINUSE|is still running after|\bnot available\b",
+    re.I,
+)
+
+
+def _strip_log_prefix(line: str) -> str:
+    return _LOG_PREFIX_RE.sub("", line or "").strip()
 # Deepest "Caused by:" is usually the true root cause.
-_CAUSED_BY_RE = re.compile(r"Caused by:\s*([A-Za-z_][\w.]*(?:Exception|Error|Failure|Timeout))")
+_CAUSED_BY_RE = re.compile(
+    r"Caused by:\s*(?:[A-Za-z_][\w.$]*\.)?([A-Z]\w*(?:Exception|Error|Failure|Timeout))\b"
+)
 # A stack frame: `at pkg.Class.method(File.java:123)` -> class path, method.
 _FRAME_RE = re.compile(r"\bat\s+([\w.$]+)\.([\w<>$]+)\s*\(")
 
@@ -100,8 +132,14 @@ def _exception_type(reason: str) -> str:
 
 
 def _cluster_label(reason: str, max_len: int = 100) -> str:
-    """Readable cluster label: exception class prefixed onto the first line."""
-    first = reason.strip().splitlines()[0] if reason.strip() else "Unknown failure"
+    """Readable cluster label: exception class prefixed onto the first line.
+
+    The log-line prefix (timestamp + [tags]) is removed first, otherwise labels for
+    text-clustered failures read as "2026-08-05 04:30:06:968 - [93a1e2e6][...]".
+    """
+    first = _strip_log_prefix(
+        reason.strip().splitlines()[0] if reason.strip() else ""
+    ) or "Unknown failure"
     exc = _exception_type(reason)
     if exc and exc.lower() not in first.lower():
         first = f"{exc}: {first}"
@@ -168,8 +206,16 @@ def _message_signature(reason: str, words: int = 8, max_len: int = 64) -> str:
     first = (reason or "").strip().splitlines()[0] if (reason or "").strip() else ""
     if not first:
         return ""
-    # Drop a leading fully-qualified exception class (already in the fingerprint).
-    first = re.sub(r"^[\w.$]*(?:Exception|Error|Failure|Timeout)\s*:\s*", "", first)
+    # Remove the log-line prefix (timestamp + [tags]) so the signature describes the
+    # error rather than a masked timestamp.
+    first = _strip_log_prefix(first)
+    # Prefer the text *after* the exception class, which is the actual message.
+    m = re.search(r"(?:[A-Za-z_][\w.$]*\.)?[A-Z]\w*(?:Exception|Error|Failure|Timeout)\s*:\s*(.+)",
+                  first)
+    if m:
+        first = m.group(1)
+    else:
+        first = re.sub(r"^[\w.$]*(?:Exception|Error|Failure|Timeout)\s*:\s*", "", first)
     # Case-preserving mask, so the label stays readable in the report.
     sig = " ".join(_mask(first).split()[:words])[:max_len]
     # Trim ragged trailing punctuation left by truncation (e.g. "By.chained(").
@@ -238,11 +284,17 @@ def cluster_failures(
     next_id = 0
 
     # --- Stage 1: exact fingerprint groups ---
+    # Failures whose text is pure HTTP/device-log noise carry no root cause. Left
+    # to the text clusterer they become one singleton each (unique timestamps and
+    # session ids), burying the real clusters — so they get a single shared bucket.
     sig_groups: dict[str, list[int]] = {}
     fallback_idx: list[int] = []
+    low_signal_idx: list[int] = []
     for i, fp in enumerate(fingerprints):
         if fp:
             sig_groups.setdefault(fp, []).append(i)
+        elif not _HAS_ERROR_SIGNAL.search(reasons[i]):
+            low_signal_idx.append(i)
         else:
             fallback_idx.append(i)
     for _fp, idxs in sig_groups.items():
@@ -271,6 +323,14 @@ def cluster_failures(
                 cluster_key[j] = next_id
                 next_id += 1
 
+    # --- Stage 3: one shared bucket for diagnostically-empty text ---
+    low_signal_cid = None
+    if low_signal_idx:
+        low_signal_cid = next_id
+        for i in low_signal_idx:
+            cluster_key[i] = next_id
+        next_id += 1
+
     failures["cluster_id"] = cluster_key
 
     clusters: list[FailureCluster] = []
@@ -285,6 +345,8 @@ def cluster_failures(
         else:
             confidence = 1.0
         fp = fingerprints[idx[0]]
+        if cid == low_signal_cid:
+            fp = "No diagnostic error in logs (HTTP/device-log noise only)"
         urls, versions = _cluster_extras(members)
         clusters.append(
             FailureCluster(

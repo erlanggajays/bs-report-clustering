@@ -66,6 +66,14 @@
     th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
     td.reason { font-family: ui-monospace, Menlo, monospace; color: #374151; font-size: 12px;
       overflow-wrap: anywhere; }
+    /* Numeric columns keep their value (and badge) on one line and stay narrow, so
+       they can never be pushed past the panel edge by a long first column. */
+    th.num, td.num { white-space: nowrap; text-align: right; width: 1%; }
+    td.wrap { overflow-wrap: anywhere; word-break: break-word; }
+    table.fixed { width: 100%; }
+    /* Last-resort escape hatch: a wide table scrolls inside its own box rather
+       than overflowing the panel (the page body must never scroll sideways). */
+    .table-scroll { overflow-x: auto; max-width: 100%; }
     .bar { height: 8px; border-radius: 6px; background: #eef2ff; overflow: hidden; }
     .bar > span { display: block; height: 100%; background: var(--brand); }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 999px;
@@ -291,31 +299,45 @@
         <div class="panel">
           {% if locator_rows %}
           <h3 class="sub-h">Locator hotspots</h3>
-          <table>
-            <thead><tr><th>Locator</th><th>Tests hit</th><th>Failures</th></tr></thead>
-            <tbody>
-            {% for l in locator_rows %}
-              <tr><td class="reason">{{ l.locator }}</td><td>{{ l.tests_affected }}</td><td>{{ l.failures }}</td></tr>
-            {% endfor %}
-            </tbody>
-          </table>
+          <div class="table-scroll">
+            <table class="fixed">
+              <thead><tr>
+                <th>Locator</th>
+                <th class="num">Tests hit</th><th class="num">Failures</th>
+              </tr></thead>
+              <tbody>
+              {% for l in locator_rows %}
+                <tr>
+                  <td class="reason wrap">{{ l.locator }}</td>
+                  <td class="num">{{ l.tests_affected }}</td>
+                  <td class="num">{{ l.failures }}</td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
           <p class="note">One broken locator can explain failures across unrelated tests — fixing it has the widest blast radius.</p>
           {% endif %}
           {% if duration_rows %}
           <h3 class="sub-h" style="margin-top:16px">Runtime outliers</h3>
-          <table>
-            <thead><tr><th>Scenario</th><th>Median</th><th>Slowest</th><th>×</th></tr></thead>
-            <tbody>
-            {% for d in duration_rows %}
-              <tr>
-                <td>{{ d.name[:60] }}</td>
-                <td>{{ d.median_seconds }}s</td>
-                <td>{{ d.slowest_seconds }}s</td>
-                <td><span class="badge mid">{{ d.ratio }}×</span></td>
-              </tr>
-            {% endfor %}
-            </tbody>
-          </table>
+          <div class="table-scroll">
+            <table class="fixed">
+              <thead><tr>
+                <th>Scenario</th>
+                <th class="num">Median</th><th class="num">Slowest</th><th class="num">Ratio</th>
+              </tr></thead>
+              <tbody>
+              {% for d in duration_rows %}
+                <tr>
+                  <td class="wrap">{{ d.name }}</td>
+                  <td class="num">{{ d.median_seconds }}s</td>
+                  <td class="num">{{ d.slowest_seconds }}s</td>
+                  <td class="num"><span class="badge mid">{{ d.ratio }}×</span></td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
           <p class="note">Median/MAD modified z-score — robust to the outlier itself. A large ratio suggests a hang or retry.</p>
           {% endif %}
           {% if time_split %}

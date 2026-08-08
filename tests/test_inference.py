@@ -38,7 +38,7 @@ def test_feature_area_mapping():
     assert feature_area("") == "unmapped"
 
 
-def test_feature_area_precedence_prefers_product_over_crosscutting_step():
+def test_feature_area_precedence():
     """A test naming both a product and a cross-cutting step belongs to the product:
     here the Tabungan Usaha creation flow is under test and KYC is just where it
     lands. Ordering in DEFAULT_FEATURE_AREAS encodes that precedence."""
@@ -46,19 +46,45 @@ def test_feature_area_precedence_prefers_product_over_crosscutting_step():
     assert feature_area(name) == "tabungan"
 
 
-def test_locator_and_screen_extraction():
+def test_locator_and_screen():
     reason = ("Can't locate an element by this strategy: "
               "By.chained({AppiumBy.accessibilityId: Lifetime interest})")
     assert extract_locator(reason) == "Lifetime interest"
-    xpath = "selector\": \"//android.view.View[@content-desc='Estimated final balance (net)']\""
-    assert "Estimated final balance" in extract_locator(xpath)
     assert extract_locator("") == ""
     assert extract_screen("at com.gopay.home.WalletHomeActivity.onCreate") == "WalletHomeActivity"
     assert extract_screen("no screen here") == ""
 
 
+def test_locator_escaped_quotes():
+    """Appium embeds selectors in JSON, so quotes arrive as \\". This previously
+    returned nothing even though a locator was present."""
+    raw = r'view.View[contains(@content-desc, \"Rp\")][1]","SESSION_ID_PLACEHOLDER"'
+    assert extract_locator(raw) == "Rp"
+
+
+def test_locator_rejects_ids():
+    """A UUID/hex value differs every session; grouping on it is meaningless."""
+    raw = r'getAttribute() with args: ["content-desc","deadbeef-1111-2222-3333-444"]'
+    assert extract_locator(raw) == ""
+
+
+def test_locator_semantic_target():
+    """Grouping must key on the element, not the selector string — otherwise
+    unrelated elements sharing an xpath prefix are merged."""
+    raw = ('selector":"//android.view.View[@content-desc=\'Estimated final balance (net)\']'
+           '/following-sibling::android.view.View')
+    # Closing parenthesis of "(net)" must survive delimiter trimming.
+    assert extract_locator(raw) == "Estimated final balance (net)"
+
+
+def test_same_element_2_strategies():
+    a = extract_locator(r'//*[contains(@content-desc, "Mutual Fund")]')
+    b = extract_locator(r'//android.widget.Button[@content-desc="Mutual Fund"]')
+    assert a == b == "Mutual Fund"
+
+
 # --- attribution -----------------------------------------------------------
-def test_attribute_detects_real_association():
+def test_attribute_detects_real():
     # Device B fails far more often than A, with adequate sample sizes.
     df = _sessions([("A", "t1", 45, 5), ("B", "t2", 20, 30)])
     result = attribute(df, "device")
@@ -68,7 +94,7 @@ def test_attribute_detects_real_association():
     assert b["ci_low"] > 1          # CI excludes 1 -> genuinely elevated
 
 
-def test_attribute_reports_no_association_when_rates_match():
+def test_attribute_no_association():
     df = _sessions([("A", "t1", 40, 10), ("B", "t2", 40, 10)])
     result = attribute(df, "device")
     assert not result["significant"].any()
@@ -83,7 +109,7 @@ def test_attribute_skips_tiny_groups():
     assert {"A", "C"} <= set(result["level"])
 
 
-def test_significant_findings_collapses_confounded_dimensions():
+def test_findings_collapse_confound():
     """A device that maps 1:1 to an OS version must not be reported twice."""
     rows = []
     for i in range(50):
@@ -99,7 +125,7 @@ def test_significant_findings_collapses_confounded_dimensions():
     assert findings.iloc[0]["confounded_with"]      # confound recorded
 
 
-def test_significant_findings_ignores_better_than_baseline():
+def test_findings_skip_better():
     """A level that fails *less* than baseline is not an actionable finding."""
     rows = []
     for i in range(60):
@@ -128,7 +154,7 @@ def test_duration_outliers_flags_hang():
     assert out.iloc[0]["ratio"] == 10.0
 
 
-def test_duration_outliers_ignores_consistent_runtimes():
+def test_duration_no_false_outlier():
     df = pd.DataFrame({
         "name": ["steady"] * 10,
         "duration": [60.0, 61.0, 59.0, 60.0, 62.0, 58.0, 60.0, 61.0, 59.0, 60.0],
