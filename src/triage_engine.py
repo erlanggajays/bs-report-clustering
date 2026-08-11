@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -86,6 +87,11 @@ class FailureCluster:
     size: int
     confidence: float                # mean intra-cluster cosine similarity (0-1)
     exception_type: str = ""         # extracted exception class, if any
+    # Most failures are framework assertion messages with no exception class, so the
+    # taxonomy category is the label that is always present — and it is the one that
+    # says who should act.
+    category: str = ""
+    owner: str = ""
     session_ids: list[str] = field(default_factory=list)
     session_urls: list[str] = field(default_factory=list)  # token-free deep links
     app_versions: list[str] = field(default_factory=list)
@@ -98,6 +104,8 @@ class FailureCluster:
             "size": self.size,
             "confidence": round(self.confidence, 3),
             "exception_type": self.exception_type,
+            "category": self.category,
+            "owner": self.owner,
             "session_ids": self.session_ids,
             "session_urls": self.session_urls,
             "app_versions": self.app_versions,
@@ -588,6 +596,28 @@ def classify_failures(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return failures, breakdown
 
 
+def _label_clusters_with_category(
+    clusters: list[FailureCluster], classified: pd.DataFrame
+) -> None:
+    """Give each cluster the dominant taxonomy category among its sessions.
+
+    Reuses the already-computed classification rather than re-running the rules, and
+    fills the one label that is present for every cluster: an exception class exists
+    only when the framework threw one, whereas a category always resolves.
+    """
+    if classified.empty or "category" not in classified:
+        return
+    by_session = dict(zip(classified["session_id"], classified["category"]))
+    owner_by_category = dict(zip(classified["category"], classified["owner"]))
+    for cluster in clusters:
+        cats = [by_session[s] for s in cluster.session_ids if s in by_session]
+        if not cats:
+            continue
+        dominant = Counter(cats).most_common(1)[0][0]
+        cluster.category = dominant
+        cluster.owner = owner_by_category.get(dominant, "")
+
+
 def locator_hotspots(classified: pd.DataFrame, top: int = 10) -> pd.DataFrame:
     """Rank failing UI locators by blast radius.
 
@@ -632,6 +662,7 @@ def run_triage(
 
     clusters, annotated = cluster_failures(df)
     classified, categories = classify_failures(df)
+    _label_clusters_with_category(clusters, classified)
 
     findings = inference.significant_findings(df)
     cat_table, cat_p, cat_resid = inference.category_by_dimension(classified, "os_version")
@@ -650,6 +681,8 @@ def run_triage(
         "locator_hotspots": locator_hotspots(classified),
         "duration_outliers": inference.duration_outliers(df),
         "time_split": inference.time_split(df),
+        "perf_vs_failure": inference.performance_vs_failure(df),
+        "perf_hotspots": _perf_hotspots(df),
         # Always present on a multi-platform run so a combined pass rate can never
         # hide one platform's regression behind the other's green.
         "platform_breakdown": _platform_breakdown(df),
@@ -687,6 +720,36 @@ def _area_by_platform(df: pd.DataFrame) -> pd.DataFrame:
     # Drop cells with too little data to be worth showing.
     pivot = pivot.where(counts >= settings.inference_min_group)
     return pivot.dropna(how="all").reset_index()
+
+
+def _perf_hotspots(df: pd.DataFrame, top: int = 8) -> pd.DataFrame:
+    """Per-scenario performance summary, most CPU-hungry first.
+
+    Empty unless profiling was fetched (--profile), and app CPU is preferred over
+    device CPU because the device figure includes the platform's own work.
+    """
+    if "app_cpu_mean" not in df.columns:
+        return pd.DataFrame()
+    numeric = df.assign(
+        app_cpu_mean=pd.to_numeric(df["app_cpu_mean"], errors="coerce"),
+        app_cpu_max=pd.to_numeric(df.get("app_cpu_max"), errors="coerce"),
+        app_mem_max_mb=pd.to_numeric(df.get("app_mem_max_mb"), errors="coerce"),
+    ).dropna(subset=["app_cpu_mean"])
+    if numeric.empty:
+        return pd.DataFrame()
+    out = (
+        numeric.groupby("name")
+        .agg(sessions=("session_id", "count"),
+             cpu_mean=("app_cpu_mean", "mean"),
+             cpu_max=("app_cpu_max", "max"),
+             mem_max_mb=("app_mem_max_mb", "max"))
+        .reset_index()
+        .round(1)
+        .sort_values("cpu_mean", ascending=False)
+        .head(top)
+        .reset_index(drop=True)
+    )
+    return out
 
 
 def _feature_area_health(df: pd.DataFrame) -> pd.DataFrame:

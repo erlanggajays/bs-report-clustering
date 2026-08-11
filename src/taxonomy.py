@@ -64,7 +64,10 @@ HAS_ERROR_SIGNAL = re.compile(
     r"(?<![\w$])[A-Z]\w*(?:Exception|Error|Failure)\b"   # a real exception class
     r"|\bError\s*:|\bFATAL\b|\bANR\b|\bassert"
     r"|\bfailed\b|\bcould not\b|\bunable to\b|\bnot found\b|\bcannot\b"
-    r"|\btimed out\b|EADDRINUSE|is still running after|\bnot available\b",
+    r"|\btimed out\b|EADDRINUSE|is still running after|\bnot available\b"
+    # "No element found ..." reads as an error to a human but contains neither
+    # "not found" nor an exception class, so it needs its own alternatives.
+    r"|\bno element found\b|\bno such\b|\bmissing\b|\bnot visible\b|\bnot present\b",
     re.I,
 )
 
@@ -86,7 +89,7 @@ def _default_rules() -> list[Rule]:
     return [
         # Crash first: a present crashlog (CRASH_MARKER) or crash text is the root
         # cause regardless of any surface symptom (e.g. a later element-not-found).
-        Rule("app-crash", "Dev",
+        Rule("app-crash", "Product bug",
              patterns=(r"BROWSERSTACK_CRASHLOG_PRESENT", r"FATAL EXCEPTION", r"\bANR\b",
                        r"application not responding", r"has stopped", r"SIGSEGV",
                        r"native crash", r"signal 11"),
@@ -136,6 +139,9 @@ def _default_rules() -> list[Rule]:
              patterns=(r"NoSuchElementException", r"unable to locate element",
                        # Real Appium/Selenium phrasings:
                        r"can(?:no|')?t locate an element", r"could not be located",
+                       # Framework wording seen in real reports: "No element found
+                       # with text/description/locator matching '...'".
+                       r"no element found", r"element not found",
                        r"by this strategy", r"AppiumBy\.", r"By\.chained",
                        r"StaleElementReferenceException", r"ElementNotVisible\w*",
                        r"ElementNotInteractable\w*", r"click intercepted",
@@ -146,10 +152,15 @@ def _default_rules() -> list[Rule]:
                        r"TimeoutException.*(element|visib|presen|clickable)",
                        r"waiting for (element|visib|presen)"),
              description="UI element not found / locator drift / overlay"),
-        Rule("assertion-failure", "Dev",
-             patterns=(r"AssertionFailedError", r"AssertionError", r"expected .*but was",
-                       r"expected .*to (be|equal|contain)", r"assertEquals", r"assertTrue",
-                       r"assertion failed", r"\bshould (be|equal|contain)\b",
+        Rule("assertion-failure", "Product bug",
+             patterns=(r"AssertionFailedError", r"AssertionError",
+                       # JUnit writes 'expected: "x" but was: "y"' — the colon means a
+                       # pattern requiring a space after "expected" silently misses,
+                       # and a real balance mismatch was filed as an infra abort.
+                       r"expected\b.{0,120}?but was",
+                       r"expected\b.{0,60}?to (be|equal|contain)",
+                       r"assertEquals", r"assertTrue", r"assertion failed",
+                       r"\bmismatch\b", r"\bshould (be|equal|contain)\b",
                        r"did not match expected"),
              description="Functional assertion failed (likely a real bug)"),
         # Last resort. Explicit infra phrases only; the duration/status heuristics
@@ -160,7 +171,12 @@ def _default_rules() -> list[Rule]:
                        r"app(?:lication)? (?:is )?not installed",
                        r"unable to (install|launch)", r"failed to (start|launch)",
                        r"device (?:not|un)available", r"no session (found|active)",
-                       r"did not (start|run)", r"Multiple Failures"),
+                       r"did not (start|run)"),
+             # "Multiple Failures" is deliberately NOT a pattern here. It is a JUnit
+             # aggregate wrapper around whatever actually failed, so matching it
+             # claimed real defects as infra aborts. With no pattern for it, a wrapped
+             # error classifies on its contents, and a wrapper with no detail falls
+             # through to no-diagnostic-logs — which is the honest answer.
              exclude_patterns=(r"Exception\b", r"\bError\b", r"assert",
                                r"locate an element", r"could not be located",
                                r"by this strategy", r"expected .*but was"),

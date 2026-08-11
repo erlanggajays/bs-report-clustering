@@ -124,6 +124,23 @@ Host: `https://api-cloud.browserstack.com/app-automate`.
 | `HISTORY_DB_PATH` | SQLite file for cross-build history | `data/history.db` |
 | `LOG_SOURCES` | Log sources fetched during enrichment (`crash`, `appium`, `device`, `text`) | `crash,appium` |
 | `ENRICH_WORKERS` | Concurrent log fetches — enrichment is network-bound | `8` |
+| `PROFILE` / `--profile` | Fetch per-session performance profiling (CPU, memory, battery, temperature) | off |
+
+### App performance (`--profile`)
+
+Pulls `/appprofiling/v2` per session and reduces the ~1s series to comparable
+figures: app CPU mean/p95/max, app memory peak and growth per minute, device CPU
+and memory-in-use, plus battery and temperature deltas. Two caveats the data
+imposes: **there is no frame/FPS series**, so rendering smoothness cannot be
+measured, and battery/temperature barely move across a 60-90s test, so those are
+only meaningful for long-running sessions. Device-wide memory *growth* is
+deliberately not reported — available RAM swings with Android's cache management,
+which produces alarming figures that say nothing about the app.
+
+Unlike log enrichment this covers **passing** sessions too (a performance
+regression does not fail a test), so it is one fetch per session — hence opt-in.
+The report then tests whether failing sessions were under measurably different
+load, using Mann-Whitney U.
 
 Sample (`--source file`) runs persist to a **separate** `data/history_sample.db`
 so demo data never pollutes real history. Seed demo history with

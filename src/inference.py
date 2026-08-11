@@ -21,7 +21,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.stats import chi2_contingency, fisher_exact
+from scipy.stats import chi2_contingency, fisher_exact, mannwhitneyu
 
 from config import settings
 
@@ -217,6 +217,55 @@ def duration_outliers(df: pd.DataFrame, z_threshold: float = 3.5) -> pd.DataFram
     if result.empty:
         return result
     return result.sort_values("modified_z", ascending=False).reset_index(drop=True)
+
+
+def performance_vs_failure(
+    df: pd.DataFrame, metrics: list[str] | None = None
+) -> pd.DataFrame:
+    """Do failing sessions differ measurably in performance from passing ones?
+
+    Uses the Mann-Whitney U test: performance metrics are skewed and small-sampled,
+    so a rank-based test is appropriate where a t-test's normality assumption is not.
+    Reports the median for each group plus the rank-biserial correlation as an effect
+    size, and only compares metrics with enough non-null values in both groups.
+    """
+    metrics = metrics or [
+        "app_cpu_mean", "app_cpu_max", "app_mem_max_mb",
+        "device_cpu_mean", "device_mem_used_max_mb",
+    ]
+    if df.empty or "is_failure" not in df:
+        return pd.DataFrame()
+
+    rows: list[dict[str, Any]] = []
+    for metric in metrics:
+        if metric not in df.columns:
+            continue
+        values = pd.to_numeric(df[metric], errors="coerce")
+        failed = values[df["is_failure"]].dropna()
+        passed = values[~df["is_failure"]].dropna()
+        if len(failed) < settings.inference_min_group or len(passed) < settings.inference_min_group:
+            continue
+        try:
+            stat, p = mannwhitneyu(failed, passed, alternative="two-sided")
+        except ValueError:
+            continue
+        # Rank-biserial correlation: 0 = no difference, ±1 = complete separation.
+        effect = 2 * stat / (len(failed) * len(passed)) - 1
+        rows.append({
+            "metric": metric,
+            "failed_median": round(float(failed.median()), 1),
+            "passed_median": round(float(passed.median()), 1),
+            "failed_n": int(len(failed)),
+            "passed_n": int(len(passed)),
+            "effect": round(float(effect), 2),
+            "p_value": float(p),
+            "significant": bool(p < settings.inference_alpha),
+        })
+
+    result = pd.DataFrame(rows)
+    if result.empty:
+        return result
+    return result.sort_values("p_value").reset_index(drop=True)
 
 
 def time_split(df: pd.DataFrame) -> dict[str, Any]:

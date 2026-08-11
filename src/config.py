@@ -24,6 +24,8 @@ SESSION_LOGS_ENDPOINT = f"{_SESSION_LOG_BASE}/logs"           # session text log
 SESSION_APPIUM_LOGS_ENDPOINT = f"{_SESSION_LOG_BASE}/appiumlogs"  # full Appium server log
 SESSION_CRASH_LOGS_ENDPOINT = f"{_SESSION_LOG_BASE}/crashlogs"    # native crash stack
 SESSION_DEVICE_LOGS_ENDPOINT = f"{_SESSION_LOG_BASE}/devicelogs"  # logcat (large)
+# Device/app performance series (CPU, memory, battery, temperature) sampled ~1-2s.
+SESSION_PROFILING_ENDPOINT = f"{_SESSION_LOG_BASE}/appprofiling/v2"
 
 
 @dataclass(frozen=True)
@@ -93,6 +95,12 @@ class Settings:
     # still retries on 429 with backoff).
     enrich_workers: int = field(
         default_factory=lambda: max(1, int(os.environ.get("ENRICH_WORKERS", "8")))
+    )
+    # Performance profiling covers PASSING sessions too — a perf regression does not
+    # fail a test — so it is one fetch per session, not per failure. Opt-in for that
+    # reason. PROFILE=1 or --profile.
+    enrich_profiling: bool = field(
+        default_factory=lambda: os.environ.get("PROFILE", "").lower() in {"1", "true", "yes"}
     )
 
     # HTTP behaviour

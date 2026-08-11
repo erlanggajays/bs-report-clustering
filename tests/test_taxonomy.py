@@ -77,7 +77,31 @@ def test_crashlog_marker_is_app_crash():
     log = "BROWSERSTACK_CRASHLOG_PRESENT\n--- crash ---\nsignal 11 (SIGSEGV)"
     cat, owner = classify("NoSuchElementException: btn not found", log, 50, "failed")
     assert cat == "app-crash"
-    assert owner == "Dev"
+    assert owner == "Product bug"
+
+
+def test_junit_colon_form_is_an_assertion_not_infra():
+    """Regression, and the costliest kind: JUnit writes 'expected: "x" but was: "y"',
+    so a pattern requiring a space after 'expected' missed it. The reason also begins
+    with the JUnit "Multiple Failures" wrapper, which used to be an explicit
+    test-did-not-run pattern — so a real balance defect was filed as an infra abort
+    that someone would simply re-run."""
+    reason = ('Multiple Failures (1 failure) -- failure 1 -- '
+              '[Estimated final balance (net) mismatch] expected: "Rp5.210.000" '
+              'but was: "Rp5.220.000" at DepositoAssertions.lambda$'
+              'assertReviewPrincipalAndEstimatedBalanceVisible$11(DepositoAssertions.java:202)')
+    cat, owner = classify(reason, duration=90, status="failed")
+    assert cat == "assertion-failure"
+    assert owner == "Product bug"
+
+
+def test_multiple_failures_wrapper_classifies_on_its_contents():
+    """The wrapper says nothing about the cause, so what it wraps must decide."""
+    assert classify("Multiple Failures (1 failure) -- failure 1 -- Element not found",
+                    duration=90, status="failed")[0] == "element-not-found"
+    # A wrapper with no detail at all: admit we cannot see the failure.
+    assert classify("Multiple Failures (1 failure) -- failure 1 -- [Gopay]",
+                    duration=90, status="failed")[0] == "no-diagnostic-logs"
 
 
 def test_signal_free_text_is_no_diagnostic_logs():

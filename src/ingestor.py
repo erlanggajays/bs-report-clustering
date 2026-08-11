@@ -19,6 +19,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import pandas as pd
 import requests
+from profiling import PROFILE_COLUMNS, parse_profile
+from taxonomy import HAS_ERROR_SIGNAL
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -29,6 +31,7 @@ from config import (
     SESSION_CRASH_LOGS_ENDPOINT,
     SESSION_DEVICE_LOGS_ENDPOINT,
     SESSION_LOGS_ENDPOINT,
+    SESSION_PROFILING_ENDPOINT,
     SESSIONS_ENDPOINT,
     settings,
 )
@@ -441,6 +444,53 @@ def _fetch_session_logs(build_id: str, session_id: str, terminal_url: str) -> tu
     return "\n".join(parts), crash_present
 
 
+def fetch_profiles(df: pd.DataFrame) -> pd.DataFrame:
+    """Attach per-session performance figures from the app-profiling endpoint.
+
+    Runs for **every** session, not just failures: a performance regression does not
+    fail a test, so passing sessions carry the signal. Fetches concurrently and
+    tolerates sessions with profiling disabled (which return nothing).
+    """
+    targets = [i for i in df.index if df.at[i, "session_id"] and df.at[i, "build_id"]]
+    if not targets:
+        return df
+
+    def _fetch(idx: int) -> tuple[int, dict]:
+        url = SESSION_PROFILING_ENDPOINT.format(
+            build_id=df.at[idx, "build_id"], session_id=df.at[idx, "session_id"]
+        )
+        try:
+            payload = _get(url)
+        except (requests.RequestException, IngestionError, ValueError):
+            return idx, {}
+        if not isinstance(payload, list):
+            return idx, {}
+        return idx, parse_profile(payload)
+
+    workers = min(settings.enrich_workers, len(targets))
+    logger.info("      profiling %d sessions with %d workers…", len(targets), workers)
+    results: list[tuple[int, dict]] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for future in as_completed([pool.submit(_fetch, i) for i in targets]):
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                logger.debug("profiling fetch failed: %s", exc)
+
+    for col in PROFILE_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    got = 0
+    for idx, metrics in results:
+        if not metrics:
+            continue
+        got += 1
+        for col, value in metrics.items():
+            df.at[idx, col] = value
+    logger.info("      profiling data returned for %d/%d sessions", got, len(targets))
+    return df
+
+
 def enrich_failure_reasons(df: pd.DataFrame) -> pd.DataFrame:
     """Best-effort: fetch each failed session's logs to (1) recover the real stack
     trace into ``reason`` for clustering and (2) store the log tail in ``log_text``
@@ -485,7 +535,16 @@ def enrich_failure_reasons(df: pd.DataFrame) -> pd.DataFrame:
         # tail is all teardown noise.
         snippet = _extract_error(combined)
         df.at[idx, "log_text"] = marker + snippet + "\n" + combined[-_LOG_STORE_CHARS:]
-        if snippet:
+
+        # Enrichment must AUGMENT, never replace a usable reason. BrowserStack often
+        # already carries the framework's own verdict ("Element not found", "Header
+        # value cannot be null"), which is a better cluster key and classification
+        # input than anything extracted from Appium chatter. Overwriting it
+        # unconditionally destroyed that text and pushed real, diagnosable failures
+        # into "no diagnostic logs". Only fill in when the original says nothing
+        # useful (empty, "COMPLETED", "TIMEOUT", a "Multiple Failures" wrapper).
+        original = str(df.at[idx, "reason"] or "")
+        if snippet and not HAS_ERROR_SIGNAL.search(original):
             df.at[idx, "reason"] = snippet
     return df
 
@@ -562,6 +621,8 @@ def ingest(
     do_enrich = settings.enrich_failure_logs if enrich_logs is None else enrich_logs
     if do_enrich and source == "api":
         df = enrich_failure_reasons(df)
+    if settings.enrich_profiling and source == "api":
+        df = fetch_profiles(df)
 
     return df, build_meta
 
@@ -604,6 +665,8 @@ def ingest_range(
                 part = _sessions_to_dataframe(_fetch_sessions_for_build(bid))
                 if do_enrich:
                     part = enrich_failure_reasons(part)
+                if settings.enrich_profiling:
+                    part = fetch_profiles(part)
                 if part.empty:
                     continue
                 part["build_id"] = bid

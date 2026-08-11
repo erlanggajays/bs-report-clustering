@@ -80,6 +80,54 @@ def test_enrichment_is_parallel_and_fault_tolerant():
     assert out.loc[out.session_id == "s5", "reason"].iloc[0] == "TIMEOUT"
 
 
+def test_enrichment_never_overwrites_a_usable_reason():
+    """Regression: enrichment replaced BrowserStack's own verdict ("Element not
+    found", "Header value cannot be null") with Appium log chatter, leaving no error
+    signal — so real, diagnosable failures were filed as "no diagnostic logs"."""
+    from ingestor import _sessions_to_dataframe, enrich_failure_reasons
+    from taxonomy import classify
+
+    raw = [
+        {"hashed_id": "keep1", "name": "expenseChart", "status": "failed", "duration": 90,
+         "os_version": "14.0", "device": "S24", "created_at": "t", "build_hashed_id": "b1",
+         "reason": "Element not found"},
+        {"hashed_id": "keep2", "name": "diraWidget", "status": "failed", "duration": 90,
+         "os_version": "14.0", "device": "S24", "created_at": "t", "build_hashed_id": "b1",
+         "reason": "No element found with text/description/locator matching 'Show more insights'"},
+        {"hashed_id": "keep3", "name": "addAccounts", "status": "failed", "duration": 90,
+         "os_version": "14.0", "device": "S24", "created_at": "t", "build_hashed_id": "b1",
+         "reason": "Header value cannot be null"},
+        # An uninformative reason SHOULD be filled in from the log.
+        {"hashed_id": "fill", "name": "other", "status": "failed", "duration": 90,
+         "os_version": "14.0", "device": "S24", "created_at": "t", "build_hashed_id": "b1",
+         "reason": "TIMEOUT"},
+    ]
+    df = _sessions_to_dataframe(raw)
+    noise = "2026-08-05 04:51:22 - [abc][HTTP] <-- POST /wd/hub/session/x/element"
+    useful = "2026-08-05 04:51:25 - [abc][W3C] NoSuchElementError: could not be located"
+
+    def fake(build_id, session_id, terminal_url):
+        return (useful if session_id == "fill" else noise), False
+
+    original = ingestor._fetch_session_logs
+    ingestor._fetch_session_logs = fake
+    try:
+        out = enrich_failure_reasons(df.copy())
+    finally:
+        ingestor._fetch_session_logs = original
+
+    by_id = out.set_index("session_id")["reason"].to_dict()
+    assert by_id["keep1"] == "Element not found"
+    assert "Show more insights" in by_id["keep2"]
+    assert by_id["keep3"] == "Header value cannot be null"
+    assert "NoSuchElementError" in by_id["fill"]
+
+    # And they land in the right categories rather than "no-diagnostic-logs".
+    cats = [classify(r.reason, r.log_text, r.duration, r.status)[0] for r in out.itertuples()]
+    assert cats == ["element-not-found", "element-not-found",
+                    "missing-auth-header", "element-not-found"]
+
+
 def test_looks_like_crash():
     assert _looks_like_crash("FATAL EXCEPTION: main\n\tat com.gopay.Foo.bar(Foo.java:1)") is True
     assert _looks_like_crash("No crashes were detected for this session.") is False

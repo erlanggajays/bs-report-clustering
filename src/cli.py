@@ -67,6 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Fetch terminal logs for failed sessions to recover real stack traces (API only).",
     )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Also fetch per-session performance profiling (CPU/memory/battery). "
+             "Covers passing sessions too, so it is one fetch per session.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable DEBUG logging.")
     return parser
 
@@ -78,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
     args.project = as_project_list(args.project)
 
     enrich = True if args.enrich_logs else None
+    if args.profile:
+        object.__setattr__(settings, 'enrich_profiling', True)
     db_path = settings.history_db_for(args.source)
 
     try:

@@ -51,6 +51,89 @@ def _fig_to_div(fig: go.Figure, div_id: str, **layout_overrides) -> str:
     )
 
 
+# Plain-English framing for each dimension: how to name it, and what a finding on
+# it should prompt the reader to do. Written for a lead skimming the report, not a
+# statistician — the numbers stay, but as supporting detail rather than the headline.
+_FINDING_PHRASING = {
+    "feature_area": (
+        "{level} tests fail {ratio}× more often than the rest of the suite",
+        "other areas",
+        "Concentrate investigation here — this is where failures cluster.",
+    ),
+    "device": (
+        "Tests on {level} fail {ratio}× more often than on other devices",
+        "other devices",
+        "Looks environment-specific. Reproduce on this device before treating it as a product bug.",
+    ),
+    "os_version": (
+        "Tests on Android {level} fail {ratio}× more often than on other versions",
+        "other OS versions",
+        "Looks OS-specific. Check behaviour differences on this version.",
+    ),
+    "platform": (
+        "{level} fails {ratio}× more often than the other platform",
+        "the other platform",
+        "One platform's implementation is behind — compare the two.",
+    ),
+    "app_version": (
+        "Build {level} fails {ratio}× more often than other builds",
+        "other builds",
+        "Check what changed in this build.",
+    ),
+}
+
+
+def _evidence_strength(p_value: float) -> str:
+    """Translate a p-value into words, so the reader need not interpret one."""
+    if p_value < 0.001:
+        return "very strong evidence"
+    if p_value < 0.01:
+        return "strong evidence"
+    return "moderate evidence"
+
+
+def _finding_cards(findings: pd.DataFrame | None) -> list[dict]:
+    """Turn each statistical finding into a plain-language card.
+
+    Keeps the odds ratio, confidence interval and p-value, but as a muted footnote:
+    the headline is a sentence a lead can act on without reading statistics.
+    """
+    if findings is None or findings.empty:
+        return []
+    cards = []
+    for i, f in enumerate(findings.itertuples(), start=1):
+        template, comparison, so_what = _FINDING_PHRASING.get(
+            f.dimension,
+            ("{level} fails {ratio}× more often than the rest",
+             "the rest", "Worth investigating."),
+        )
+        level = str(f.level)
+        # Round for the headline — a lead does not need two decimal places; the exact
+        # value stays in the statistics footnote.
+        headline = template.format(
+            level=level[:1].upper() + level[1:], ratio=f"{round(f.odds_ratio, 1):g}"
+        )
+        cards.append({
+            "rank": i,
+            "headline": headline,
+            "failures": int(f.failures),
+            "sessions": int(f.sessions),
+            "rate_pct": round(f.failure_rate * 100),
+            "baseline_pct": round(f.baseline_rate * 100),
+            "comparison": comparison,
+            "so_what": so_what,
+            "strength": _evidence_strength(float(f.p_value)),
+            "odds_ratio": f.odds_ratio,
+            "ci_low": f.ci_low,
+            "ci_high": f.ci_high,
+            "p_value": float(f.p_value),
+            "confounded_with": getattr(f, "confounded_with", "") or "",
+            "dimension": f.dimension,
+            "level": level,
+        })
+    return cards
+
+
 def _records(frame: pd.DataFrame | None, limit: int | None = None) -> list[dict]:
     """DataFrame -> list of dicts for the template ([] when absent/empty)."""
     if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
@@ -164,6 +247,11 @@ def _category_details(classified: pd.DataFrame | None) -> list[dict]:
             "category": cat,
             "owner": sub["owner"].iloc[0],
             "count": int(len(sub)),
+            # The header counts failures while the list groups by test, so one test
+            # failing twice shows a single row against a count of 2. Carrying the
+            # test count lets the report state that relationship instead of leaving
+            # the reader to spot a small "x2".
+            "test_count": len(tests),
             "description": category_description(cat),
             "tests": tests,
         })
@@ -308,13 +396,15 @@ def generate_report(
         category_rows=category_rows,
         category_details=_category_details(classified),
         # --- data-science layer ---
-        findings=_records(ds.get("findings")),
+        findings=_finding_cards(ds.get("findings")),
         feature_area_chart=_feature_area_chart(ds.get("feature_area_health")),
         feature_area_rows=_records(ds.get("feature_area_health")),
         locator_rows=_records(ds.get("locator_hotspots")),
         duration_rows=_records(ds.get("duration_outliers"), limit=6),
         time_split=ds.get("time_split") or {},
         alpha=settings.inference_alpha,
+        perf_rows=_records(ds.get("perf_hotspots")),
+        perf_findings=_records(ds.get("perf_vs_failure")),
         platform_rows=_records(ds.get("platform_breakdown")),
         area_by_platform=_records(ds.get("area_by_platform")),
         platforms=_platform_names(ds.get("area_by_platform")),
