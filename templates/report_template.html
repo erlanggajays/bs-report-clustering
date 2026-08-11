@@ -10,29 +10,40 @@
       --bg: #f4f6fb; --card: #ffffff; --ink: #1f2933; --muted: #6b7280;
       --line: #e5e7eb; --brand: #2563eb; --good: #16a34a; --bad: #dc2626;
       --warn: #ea580c; --radius: 14px;
+      /* Type scale. Each step has one job, so a size is never chosen ad hoc:
+         hero   the single metric number on a card
+         title  the report title
+         h2     section headings — must outrank body prose
+         h3     panel sub-headings and finding headlines
+         body   prose the reader is meant to actually read
+         data   table cells and list rows
+         meta   secondary metadata: badges, device, sub-values
+         micro  uppercase column labels and the statistics footnote */
+      --fs-hero: 30px; --fs-title: 22px; --fs-h2: 17px; --fs-h3: 15px;
+      --fs-body: 14px; --fs-data: 13px; --fs-meta: 12px; --fs-micro: 11px;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0; background: var(--bg); color: var(--ink);
       font-family: Inter, system-ui, -apple-system, Segoe UI, sans-serif;
-      line-height: 1.5;
+      font-size: var(--fs-body); line-height: 1.55;
     }
     .wrap { max-width: 1120px; margin: 0 auto; padding: 32px 24px 64px; }
     header { display: flex; justify-content: space-between; align-items: flex-end;
       flex-wrap: wrap; gap: 12px; margin-bottom: 28px; }
-    header h1 { font-size: 22px; margin: 0; }
-    header .sub { color: var(--muted); font-size: 14px; margin-top: 4px; }
+    header h1 { font-size: var(--fs-title); margin: 0; }
+    header .sub { color: var(--muted); font-size: var(--fs-body); margin-top: 4px; }
     .pill { background: #eef2ff; color: var(--brand); padding: 4px 12px;
-      border-radius: 999px; font-size: 12px; font-weight: 600; }
+      border-radius: 999px; font-size: var(--fs-meta); font-weight: 600; }
     .grid { display: grid; gap: 18px; }
     .cards { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
     .card { background: var(--card); border: 1px solid var(--line);
       border-radius: var(--radius); padding: 18px 20px; }
-    .card .k { font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+    .card .k { font-size: var(--fs-meta); text-transform: uppercase; letter-spacing: .04em;
       color: var(--muted); font-weight: 600; }
-    .card .v { font-size: 30px; font-weight: 700; margin-top: 6px; }
-    .card .v.small { font-size: 22px; }
-    .card .note { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .card .v { font-size: var(--fs-hero); font-weight: 700; margin-top: 6px; }
+    .card .v.small { font-size: var(--fs-title); }
+    .card .note { font-size: var(--fs-meta); color: var(--muted); margin-top: 4px; }
     /* Info marker + hover tooltip on summary cards */
     .card { position: relative; }
     .card .k .info { display: inline-flex; align-items: center; justify-content: center;
@@ -42,7 +53,7 @@
     .card[data-tip]:hover::after { content: attr(data-tip); position: absolute;
       left: 0; top: calc(100% - 4px);
       width: max-content; max-width: 240px; background: #111827; color: #f9fafb;
-      font-size: 12px; font-weight: 400; line-height: 1.4; text-transform: none;
+      font-size: var(--fs-meta); font-weight: 400; line-height: 1.4; text-transform: none;
       letter-spacing: 0; padding: 9px 11px; border-radius: 8px; z-index: 20;
       box-shadow: 0 6px 20px rgba(0,0,0,.18); pointer-events: none; }
     /* Rightmost card: anchor tooltip to the right so it never clips off-screen. */
@@ -53,101 +64,145 @@
     .card:last-child[data-tip]:hover::before { left: auto; right: 18px; }
     .v.good { color: var(--good); } .v.bad { color: var(--bad); } .v.warn { color: var(--warn); }
     section { margin-top: 34px; }
-    section h2 { font-size: 16px; margin: 0 0 14px; }
-    h3.sub-h { font-size: 13px; margin: 0 0 8px; color: var(--ink); }
+    section h2 { font-size: var(--fs-h2); font-weight: 700; margin: 0 0 14px; }
+    h3.sub-h { font-size: var(--fs-body); font-weight: 600; margin: 0 0 10px; color: var(--ink); }
     .panel { background: var(--card); border: 1px solid var(--line);
       border-radius: var(--radius); padding: 18px 20px; min-width: 0; overflow: hidden; }
     /* minmax(0,…) lets columns shrink below their content so a wide Plotly chart
        can't overflow and cover the neighbouring panel. */
     .two-col { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
     @media (max-width: 760px) { .two-col { grid-template-columns: 1fr; } }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; font-size: var(--fs-data); }
     th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
-    th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
-    td.reason { font-family: ui-monospace, Menlo, monospace; color: #374151; font-size: 12px;
+    th { color: var(--muted); font-weight: 600; font-size: var(--fs-meta); text-transform: uppercase; }
+    td.reason { font-family: ui-monospace, Menlo, monospace; color: #374151; font-size: var(--fs-meta);
       overflow-wrap: anywhere; }
-    /* Numeric columns keep their value (and badge) on one line and stay narrow, so
-       they can never be pushed past the panel edge by a long first column. */
-    /* Give the descriptive first column every spare pixel and shrink the numeric
-       ones to their content — the 100%/1% pair is what forces that split. */
-    th.num, td.num { white-space: nowrap; text-align: right; width: 1%;
+    /* Numeric columns hold a fixed width under table-layout: fixed, so a long first
+       column can never push them past the panel edge. */
+    th.num, td.num { white-space: nowrap; text-align: right; width: 80px;
       padding-left: 14px; padding-right: 0; }
-    td.wrap, th.wrap { width: 100%; overflow-wrap: anywhere; word-break: break-word; }
-    table.fixed { width: 100%; }
+    /* Named "txtwrap", not "wrap": the page container is .wrap, and reusing that name
+       made every tagged cell inherit its padding: 32px 24px 64px — which is what made
+       table headers stack and rows balloon. */
+    td.txtwrap, th.txtwrap { overflow-wrap: anywhere; word-break: break-word; }
+    /* A short text label that must stay on one line. Not .num (that right-aligns) and
+       not .wrap — with overflow-wrap:anywhere a label's minimum width becomes a single
+       character, which collapsed the column to 11px and stacked the header vertically. */
+    td.tight, th.tight { white-space: nowrap; width: 1%; text-align: left; }
+    /* table-layout: fixed is the point of this class and was missing. Without it the
+       browser negotiates widths from content, and a cell holding a long selector
+       (overflow-wrap:anywhere makes its minimum width one character) collapsed to
+       21px — producing 3000px-tall rows. Fixed layout gives the sized columns their
+       width and hands the remainder to the unsized one. */
+    table.fixed { width: 100%; table-layout: fixed; }
     /* Align the counts with the first line of the label rather than centring them
        against a multi-line selector block, and trim the generous default cell
        padding so the selector text gets the width instead. */
     table.fixed td, table.fixed th { vertical-align: top; padding-left: 0; padding-right: 0; }
     table.fixed th.num, table.fixed td.num { padding-left: 16px; }
+    table.fixed th.tight, table.fixed td.tight { padding-left: 16px; }
     /* Last-resort escape hatch: a wide table scrolls inside its own box rather
        than overflowing the panel (the page body must never scroll sideways). */
     .table-scroll { overflow-x: auto; max-width: 100%; }
     /* Locator hotspots: the element groups the row, the full selector(s) make it
        fixable. */
     .loc-target { font-weight: 600; display: block; }
-    code.loc-selector { display: block; width: 100%; margin-top: 4px; font-size: 11px;
+    code.loc-selector { display: block; width: 100%; margin-top: 4px; font-size: var(--fs-micro);
       font-family: ui-monospace, Menlo, monospace; color: var(--muted);
       background: #f8fafc; border: 1px solid var(--line); border-radius: 6px;
       padding: 4px 6px; overflow-wrap: anywhere; }
     .bar { height: 8px; border-radius: 6px; background: #eef2ff; overflow: hidden; }
     .bar > span { display: block; height: 100%; background: var(--brand); }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 999px;
-      font-size: 12px; font-weight: 600; white-space: nowrap; }
+      font-size: var(--fs-meta); font-weight: 600; white-space: nowrap; }
     .badge.hi { background: #fee2e2; color: var(--bad); }
     .badge.mid { background: #ffedd5; color: var(--warn); }
     .badge.lo { background: #dcfce7; color: var(--good); }
-    .badge.owner { background: #e0f2fe; color: #075985; }
+    /* Owner badges are coloured by urgency, so the panel conveys priority before
+       any number is read: a product defect reaches users, an infra flake does not. */
+    .badge.own-product { background: #fee2e2; color: #b91c1c; }
+    .badge.own-backend { background: #ffedd5; color: #c2410c; }
+    .badge.own-test    { background: #e0f2fe; color: #075985; }
+    .badge.own-triage  { background: #ede9fe; color: #6d28d9; }
+    .badge.own-infra   { background: #f1f5f9; color: #475569; }
     /* Expandable failure-category rows (flexbox so the marker isn't a stray column) */
     .cat-head { display: flex; align-items: center; gap: 10px; padding: 6px 10px 6px 28px;
-      font-size: 12px; text-transform: uppercase; color: var(--muted); font-weight: 600;
+      font-size: var(--fs-meta); text-transform: uppercase; color: var(--muted); font-weight: 600;
       border-bottom: 1px solid var(--line); }
     .cat-head .h-cat { flex: 1; }
     .cat-head .h-count { width: 52px; text-align: right; }
     details.cat { border-bottom: 1px solid var(--line); }
     details.cat > summary { display: flex; align-items: center; gap: 10px; padding: 10px;
-      cursor: pointer; list-style: none; font-size: 13px; }
+      cursor: pointer; list-style: none; font-size: var(--fs-data); }
     details.cat > summary::-webkit-details-marker { display: none; }
-    details.cat > summary::before { content: "▸"; color: var(--muted); font-size: 11px;
+    details.cat > summary::before { content: "▸"; color: var(--muted); font-size: var(--fs-micro);
       width: 8px; flex: none; }
     details.cat[open] > summary::before { content: "▾"; }
     details.cat > summary .cat-name { flex: 1 1 auto; min-width: 0; font-weight: 600;
       overflow-wrap: anywhere; }
     details.cat > summary .cat-count { width: 52px; text-align: right; color: var(--muted);
       flex: none; }
-    .cat-desc { margin: 0 10px 6px 28px; font-size: 12px; color: var(--muted); font-style: italic; }
+    .sub-label { margin: 10px 10px 4px 28px; font-size: var(--fs-micro); text-transform: uppercase;
+      letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+    ul.cat-causes { list-style: none; margin: 0 0 6px; padding: 0 10px 0 28px; }
+    ul.cat-causes li { display: flex; align-items: baseline; gap: 10px; padding: 5px 0;
+      border-top: 1px dashed var(--line); font-size: var(--fs-data); }
+    /* Column labels for the nested lists: a bare count and a bare percentage are
+       meaningless without them. Same flex geometry as the rows beneath. */
+    .rc-head { display: flex; align-items: baseline; gap: 10px; padding: 0 10px 4px 28px;
+      font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: .04em;
+      color: var(--muted); font-weight: 600; }
+    .rc-head.t-head { padding-left: 28px; }
+    .rc-head.t-head .t-name { flex: 1; }
+    .rc-head.t-head .t-meta { flex: none; }
+    /* Header and value share one fixed box per column, otherwise the wider header
+       word ("Confidence" vs "91%") shifts the label column out of alignment. */
+    .rc-head .rc-count, ul.cat-causes .rc-count { flex: none; width: 40px; text-align: right; }
+    .rc-head .rc-conf,  ul.cat-causes .rc-conf  { flex: none; width: 76px; text-align: right; }
+    .rc-head .rc-label, ul.cat-causes .rc-label { flex: 1; min-width: 0; }
+    ul.cat-causes .rc-count { font-weight: 700; color: var(--ink); }
+    ul.cat-causes .rc-label { overflow-wrap: anywhere;
+      font-family: ui-monospace, Menlo, monospace; font-size: var(--fs-meta); }
+    ul.cat-causes .rc-conf { color: var(--muted); font-size: var(--fs-meta); }
+    .cat-desc { margin: 0 10px 6px 28px; font-size: var(--fs-data); color: var(--muted); font-style: italic; }
     /* Statistical findings */
     .finding { padding: 16px 0; border-bottom: 1px solid var(--line); }
     .finding:last-of-type { border-bottom: none; }
     .f-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
     /* The headline carries the finding; statistics are supporting detail below it. */
     .f-rank { flex: none; width: 22px; height: 22px; border-radius: 50%;
-      background: var(--brand); color: #fff; font-size: 12px; font-weight: 700;
+      background: var(--brand); color: #fff; font-size: var(--fs-meta); font-weight: 700;
       display: inline-flex; align-items: center; justify-content: center; }
-    .f-headline { font-size: 15px; font-weight: 600; line-height: 1.35; }
-    .f-body { font-size: 13px; color: #374151; margin-left: 32px; }
-    .f-action { margin: 6px 0 0 32px; font-size: 13px; color: var(--brand); font-weight: 600; }
-    .f-note { margin: 8px 0 0 32px; font-size: 12px; color: var(--warn); }
-    .f-stats { margin: 8px 0 0 32px; font-size: 11px; color: var(--muted); }
+    .f-headline { font-size: var(--fs-h3); font-weight: 600; line-height: 1.35; }
+    .f-body { font-size: var(--fs-data); color: #374151; margin-left: 32px; }
+    .f-action { margin: 6px 0 0 32px; font-size: var(--fs-data); color: var(--brand); font-weight: 600; }
+    .f-note { margin: 8px 0 0 32px; font-size: var(--fs-meta); color: var(--warn); }
+    .f-stats { margin: 8px 0 0 32px; font-size: var(--fs-micro); color: var(--muted); }
     .mono { font-family: ui-monospace, Menlo, monospace; }
     ul.cat-tests { list-style: none; margin: 0 0 8px; padding: 2px 10px 2px 28px; }
     ul.cat-tests li { display: flex; align-items: baseline; gap: 8px; padding: 5px 0;
-      font-size: 13px; border-top: 1px dashed var(--line); min-width: 0; flex-wrap: wrap; }
+      font-size: var(--fs-data); border-top: 1px dashed var(--line); min-width: 0; flex-wrap: wrap; }
     /* Long camelCase test names are single unbreakable tokens: allow them to wrap
        (min-width:0 + overflow-wrap) so they can't push the meta/link out of view. */
     ul.cat-tests .t-name { flex: 1 1 60%; min-width: 0; color: #374151;
       overflow-wrap: anywhere; }
     /* The test name IS the replay link (bigger target than a separate icon). */
     ul.cat-tests .t-meta { flex: 0 0 auto; margin-left: auto; color: var(--muted);
-      font-size: 12px; white-space: nowrap; }
+      font-size: var(--fs-meta); white-space: nowrap; }
     a.t-link { color: var(--brand); text-decoration: none; }
     a.t-link:hover { text-decoration: underline; }
-    .empty { color: var(--muted); padding: 24px; text-align: center; }
+    /* Explanatory prose under a panel. Previously unsized, so it inherited the
+       browser's 16px and read larger than the data it explains. */
+    p.note, div.note:not(.card .note) { font-size: var(--fs-data); color: var(--muted);
+      line-height: 1.55; }
+    .empty { color: var(--muted); padding: 24px; text-align: center;
+      font-size: var(--fs-data); }
     .sample-banner { background: #fef3c7; border: 1px solid #f59e0b; color: #92400e;
-      border-radius: var(--radius); padding: 12px 16px; margin-bottom: 22px; font-size: 13px; }
+      border-radius: var(--radius); padding: 12px 16px; margin-bottom: 22px; font-size: var(--fs-data); }
     .sample-banner code { background: rgba(146,64,14,.12); padding: 1px 5px; border-radius: 4px; }
     .window-banner { background: #eff6ff; border: 1px solid #93c5fd; color: #1e40af;
-      border-radius: var(--radius); padding: 12px 16px; margin-bottom: 22px; font-size: 13px; }
-    footer { color: var(--muted); font-size: 12px; margin-top: 40px; text-align: center; }
+      border-radius: var(--radius); padding: 12px 16px; margin-bottom: 22px; font-size: var(--fs-data); }
+    footer { color: var(--muted); font-size: var(--fs-meta); margin-top: 40px; text-align: center; }
   </style>
 </head>
 <body>
@@ -334,13 +389,13 @@
           <div class="table-scroll">
             <table class="fixed">
               <thead><tr>
-                <th class="wrap">Locator</th>
+                <th class="txtwrap">Locator</th>
                 <th class="num">Tests</th><th class="num">Failures</th>
               </tr></thead>
               <tbody>
               {% for l in locator_rows %}
                 <tr>
-                  <td class="wrap">
+                  <td class="txtwrap">
                     <span class="loc-target">{{ l.locator }}</span>
                     {% if l.selectors %}
                       {% for sel in l.selectors %}
@@ -368,13 +423,13 @@
           <div class="table-scroll">
             <table class="fixed">
               <thead><tr>
-                <th class="wrap">Scenario</th>
+                <th class="txtwrap">Scenario</th>
                 <th class="num">Typical</th><th class="num">Slowest</th><th class="num">Ratio</th>
               </tr></thead>
               <tbody>
               {% for d in duration_rows %}
                 <tr>
-                  <td class="wrap">{{ d.name }}</td>
+                  <td class="txtwrap">{{ d.name }}</td>
                   <td class="num">{{ d.median_seconds }}s</td>
                   <td class="num">{{ d.slowest_seconds }}s</td>
                   <td class="num"><span class="badge mid">{{ d.ratio }}×</span></td>
@@ -418,14 +473,14 @@
           <div class="table-scroll">
             <table class="fixed">
               <thead><tr>
-                <th class="wrap">Scenario</th>
+                <th class="txtwrap">Scenario</th>
                 <th class="num">Sessions</th><th class="num">CPU avg</th>
                 <th class="num">CPU peak</th><th class="num">Memory peak</th>
               </tr></thead>
               <tbody>
               {% for p in perf_rows %}
                 <tr>
-                  <td class="wrap">{{ p.name }}</td>
+                  <td class="txtwrap">{{ p.name }}</td>
                   <td class="num">{{ p.sessions }}</td>
                   <td class="num">{{ p.cpu_mean }}%</td>
                   <td class="num">{{ p.cpu_max }}%</td>
@@ -449,13 +504,13 @@
           <div class="table-scroll">
             <table class="fixed">
               <thead><tr>
-                <th class="wrap">Metric</th>
+                <th class="txtwrap">Metric</th>
                 <th class="num">Failed</th><th class="num">Passed</th><th class="num">p</th>
               </tr></thead>
               <tbody>
               {% for f in perf_findings %}
                 <tr>
-                  <td class="wrap">{{ f.metric }}
+                  <td class="txtwrap">{{ f.metric }}
                     {% if f.significant %}<span class="badge hi">significant</span>{% endif %}
                   </td>
                   <td class="num">{{ f.failed_median }}</td>
@@ -493,13 +548,38 @@
           <details class="cat">
             <summary>
               <span class="cat-name">{{ c.category }}</span>
-              <span class="badge owner">{{ c.owner }}</span>
+              <span class="badge {{ c.owner_class }}">{{ c.owner }}</span>
               <span class="cat-count">{{ c.count }}</span>
             </summary>
             <p class="cat-desc">
               {{ c.count }} failure{{ '' if c.count == 1 else 's' }} across
               {{ c.test_count }} test{{ '' if c.test_count == 1 else 's' }}{% if c.description %} · {{ c.description }}{% endif %}
             </p>
+            {% if c.root_causes %}
+            <div class="sub-label">Root causes ({{ c.root_causes | length }})</div>
+            <div class="rc-head">
+              <span class="rc-count">Fails</span>
+              <span class="rc-label">Distinct root cause</span>
+              <span class="rc-conf" title="How tightly this group's failures resemble each other">Confidence</span>
+            </div>
+            <ul class="cat-causes">
+              {% for rc in c.root_causes %}
+              <li>
+                <span class="rc-count">{{ rc.size }}</span>
+                {% if rc.session_url %}
+                  <a class="t-link rc-label" href="{{ rc.session_url }}" target="_blank" rel="noopener"
+                     title="Open an example session in BrowserStack">{{ rc.label }}</a>
+                {% else %}<span class="rc-label">{{ rc.label }}</span>{% endif %}
+                <span class="rc-conf" title="How tightly this group's failures resemble each other">{{ rc.confidence_pct }}%</span>
+              </li>
+              {% endfor %}
+            </ul>
+            {% endif %}
+            <div class="sub-label">Tests affected ({{ c.test_count }})</div>
+            <div class="rc-head t-head">
+              <span class="t-name">Test</span>
+              <span class="t-meta">Failures · device</span>
+            </div>
             <ul class="cat-tests">
               {% for t in c.tests %}
               <li>
@@ -530,47 +610,7 @@
     <section>
       <h2>Failure cluster breakdown</h2>
       <div class="panel">{{ cluster_chart | safe }}</div>
-      {% if clusters %}
-      <div class="panel" style="margin-top:16px">
-        <table class="fixed">
-          <thead><tr>
-            <th>#</th><th class="wrap">Root cause (representative)</th>
-            <th>Category</th><th>Owner</th>
-            <th class="num">Failures</th><th class="num">Confidence</th>
-          </tr></thead>
-          <tbody>
-          {% for c in clusters %}
-            <tr>
-              <td>{{ c.cluster_id }}</td>
-              <td class="reason">
-                {% if c.session_urls %}
-                  <a class="t-link" href="{{ c.session_urls[0] }}" target="_blank" rel="noopener"
-                     title="Open an example session in BrowserStack (video + logs)">{{ c.label }}</a>
-                {% else %}{{ c.label }}{% endif %}
-              </td>
-              {# The exception class is deliberately not shown: only a minority of
-                 failures carry one (most are framework assertion messages), so it
-                 appeared on a single row, and the root-cause text beside it already
-                 begins with that class name. It is still parsed — it feeds the
-                 cluster fingerprint — just not rendered. #}
-              <td>{% if c.category %}{{ c.category }}{% else %}—{% endif %}</td>
-              <td>{% if c.owner %}<span class="badge owner">{{ c.owner }}</span>{% else %}—{% endif %}</td>
-              <td class="num">{{ c.size }}</td>
-              <td class="num">
-                <span class="badge {{ 'lo' if c.confidence >= 0.75 else 'mid' if c.confidence >= 0.5 else 'hi' }}">
-                  {{ (c.confidence * 100) | round(0) }}%
-                </span>
-              </td>
-            </tr>
-          {% endfor %}
-          </tbody>
-        </table>
-        <p class="note" style="margin-top:8px">
-          Click a root cause to open an example BrowserStack session (video + device logs) — sign-in required.
-        </p>
-      </div>
-      {% endif %}
-    </section>
+</section>
 
     <!-- Flakiness -->
     {% if flaky_rows %}

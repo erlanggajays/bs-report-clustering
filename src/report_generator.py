@@ -134,6 +134,24 @@ def _finding_cards(findings: pd.DataFrame | None) -> list[dict]:
     return cards
 
 
+# Owner -> CSS suffix, so the badge colour carries urgency rather than being uniform.
+# A product defect reaches users; an infra flake just needs a re-run. Reading the
+# panel should convey that ordering before any number is read.
+_OWNER_CLASS = {
+    "Product bug": "own-product",      # red    — a real defect, highest urgency
+    "Backend": "own-backend",          # orange — a real failure, service side
+    "Test automation": "own-test",      # blue   — our tooling, not user-facing
+    "Test setup": "own-test",
+    "Needs triage": "own-triage",      # purple — unknown, needs a human
+    "Infra / re-run": "own-infra",     # grey   — lowest, just re-run
+}
+
+
+def owner_class(owner: str) -> str:
+    """CSS suffix for an owner badge; unknown owners fall back to the neutral style."""
+    return _OWNER_CLASS.get(owner, "own-test")
+
+
 def _records(frame: pd.DataFrame | None, limit: int | None = None) -> list[dict]:
     """DataFrame -> list of dicts for the template ([] when absent/empty)."""
     if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
@@ -160,22 +178,32 @@ def _cluster_chart(clusters: list[FailureCluster], top: int = 12) -> str:
     # Clusters arrive largest-first. Chart the meaningful ones and roll the long
     # tail of one-off failures into a single bar, so it can't dominate the axis.
     head, tail = clusters[:top], clusters[top:]
+    labels = [f"#{c.cluster_id}: {_trim(c.label)}" for c in head]
     rows = [
         {
-            "Root cause": f"#{c.cluster_id}: {_trim(c.label)}",
+            "Root cause": label,
             "Full": f"#{c.cluster_id}: {c.label}",
             "Failures": c.size,
             "Confidence": c.confidence,
         }
-        for c in head
+        for c, label in zip(head, labels)
     ]
     if tail:
+        labels.append(f"+ {len(tail)} smaller clusters")
         rows.append({
-            "Root cause": f"+ {len(tail)} smaller clusters",
+            "Root cause": labels[-1],
             "Full": f"{len(tail)} clusters of {sum(c.size for c in tail)} failures total",
             "Failures": sum(c.size for c in tail),
             "Confidence": 0.0,
         })
+    # Plotly right-aligns categorical y labels, which leaves a ragged left edge on
+    # error text of wildly differing lengths. Padding every label to the same
+    # character count in a monospace tick font aligns them left instead. A
+    # non-breaking space is used because trailing spaces collapse in HTML.
+    width = max(len(label) for label in labels)
+    padded = {label: label + "\u00a0" * (width - len(label)) for label in labels}
+    for row in rows:
+        row["Root cause"] = padded[row["Root cause"]]
     data = pd.DataFrame(rows)
     fig = px.bar(
         data,
@@ -191,7 +219,8 @@ def _cluster_chart(clusters: list[FailureCluster], top: int = 12) -> str:
     # Full label on hover; automargin lets the y-axis expand to fit long labels.
     fig.update_traces(hovertemplate="%{customdata[0]}<br>Failures: %{x}<extra></extra>")
     fig.update_layout(
-        yaxis=dict(autorange="reversed", automargin=True),
+        yaxis=dict(autorange="reversed", automargin=True, title=None,
+                   tickfont=dict(family="ui-monospace, Menlo, monospace", size=11)),
         coloraxis_colorbar=dict(title="conf"),
     )
     return _fig_to_div(fig, "cluster-chart")
@@ -222,11 +251,31 @@ def _category_chart(categories: pd.DataFrame | None) -> str:
     )
 
 
-def _category_details(classified: pd.DataFrame | None) -> list[dict]:
+def _root_causes_by_category(clusters: list[FailureCluster]) -> dict[str, list[dict]]:
+    """Group clusters under their category, largest first.
+
+    A single category routinely contains several genuinely different root causes —
+    element-not-found split into seven on real data — so the category alone cannot
+    say what to fix first. Nesting keeps that detail without a second table.
+    """
+    grouped: dict[str, list[dict]] = {}
+    for cluster in sorted(clusters, key=lambda c: c.size, reverse=True):
+        grouped.setdefault(cluster.category or "uncategorized", []).append({
+            "label": cluster.label,
+            "size": cluster.size,
+            "confidence_pct": round(cluster.confidence * 100),
+            "session_url": cluster.session_urls[0] if cluster.session_urls else "",
+        })
+    return grouped
+
+
+def _category_details(classified: pd.DataFrame | None,
+                      clusters: list[FailureCluster] | None = None) -> list[dict]:
     """Per-category test breakdown for the expandable table: which tests fell into
     each category, how often, and a link to one example session."""
     if classified is None or classified.empty:
         return []
+    root_causes = _root_causes_by_category(clusters or [])
     out: list[dict] = []
     for cat in classified["category"].value_counts().index:  # busiest first
         sub = classified[classified["category"] == cat]
@@ -246,6 +295,7 @@ def _category_details(classified: pd.DataFrame | None) -> list[dict]:
         out.append({
             "category": cat,
             "owner": sub["owner"].iloc[0],
+            "owner_class": owner_class(sub["owner"].iloc[0]),
             "count": int(len(sub)),
             # The header counts failures while the list groups by test, so one test
             # failing twice shows a single row against a count of 2. Carrying the
@@ -253,6 +303,7 @@ def _category_details(classified: pd.DataFrame | None) -> list[dict]:
             # the reader to spot a small "x2".
             "test_count": len(tests),
             "description": category_description(cat),
+            "root_causes": (root_causes or {}).get(cat, []),
             "tests": tests,
         })
     return out
@@ -394,7 +445,7 @@ def generate_report(
         trend_chart=_trend_chart(trend),
         category_chart=_category_chart(categories),
         category_rows=category_rows,
-        category_details=_category_details(classified),
+        category_details=_category_details(classified, clusters),
         # --- data-science layer ---
         findings=_finding_cards(ds.get("findings")),
         feature_area_chart=_feature_area_chart(ds.get("feature_area_health")),
