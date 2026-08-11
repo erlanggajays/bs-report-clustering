@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from features import extract_locator, extract_screen, feature_area
+from features import extract_locator, extract_screen, extract_selector, feature_area
 from inference import (
     attribute,
     duration_outliers,
@@ -81,6 +81,34 @@ def test_same_element_2_strategies():
     a = extract_locator(r'//*[contains(@content-desc, "Mutual Fund")]')
     b = extract_locator(r'//android.widget.Button[@content-desc="Mutual Fund"]')
     assert a == b == "Mutual Fund"
+
+
+def test_full_selector_kept_for_display():
+    """Grouping normalises to the element, but fixing needs the exact expression,
+    so the verbatim selector is preserved alongside it."""
+    raw = (r'{"strategy":"xpath","selector":"//android.view.View[@content-desc='
+           r'\"Estimated final balance (net)\"]/following-sibling::android.view.View'
+           r'[contains(@content-desc, \"Rp\")]","context":""}')
+    selector = extract_selector(raw)
+    # The whole expression survives — not cut at the first inner quote.
+    assert selector.startswith("//android.view.View[@content-desc=")
+    assert selector.endswith("]")
+    assert "following-sibling" in selector
+
+
+def test_selector_allows_arbitrary_label_characters():
+    """Enumerating allowed xpath characters loses labels containing & or %."""
+    raw = r'//android.widget.TextView[@text="Renew principal & interest"]'
+    assert extract_selector(raw) == raw
+
+
+def test_grouping_key_and_selector_are_independent():
+    a = r'//android.widget.Button[@content-desc="Mutual Fund"]'
+    b = r'//*[contains(@content-desc, "Mutual Fund")]'
+    # One row (same element) …
+    assert extract_locator(a) == extract_locator(b)
+    # … but both selectors are retained for display.
+    assert extract_selector(a) != extract_selector(b)
 
 
 # --- attribution -----------------------------------------------------------

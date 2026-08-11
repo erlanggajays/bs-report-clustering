@@ -74,6 +74,13 @@
     /* Last-resort escape hatch: a wide table scrolls inside its own box rather
        than overflowing the panel (the page body must never scroll sideways). */
     .table-scroll { overflow-x: auto; max-width: 100%; }
+    /* Locator hotspots: the element groups the row, the full selector(s) make it
+       fixable. */
+    .loc-target { font-weight: 600; display: block; }
+    code.loc-selector { display: block; margin-top: 4px; font-size: 11px;
+      font-family: ui-monospace, Menlo, monospace; color: var(--muted);
+      background: #f8fafc; border: 1px solid var(--line); border-radius: 6px;
+      padding: 4px 6px; overflow-wrap: anywhere; }
     .bar { height: 8px; border-radius: 6px; background: #eef2ff; overflow: hidden; }
     .bar > span { display: block; height: 100%; background: var(--brand); }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 999px;
@@ -308,7 +315,14 @@
               <tbody>
               {% for l in locator_rows %}
                 <tr>
-                  <td class="reason wrap">{{ l.locator }}</td>
+                  <td class="wrap">
+                    <span class="loc-target">{{ l.locator }}</span>
+                    {% if l.selectors %}
+                      {% for sel in l.selectors %}
+                      <code class="loc-selector">{{ sel }}</code>
+                      {% endfor %}
+                    {% endif %}
+                  </td>
                   <td class="num">{{ l.tests_affected }}</td>
                   <td class="num">{{ l.failures }}</td>
                 </tr>

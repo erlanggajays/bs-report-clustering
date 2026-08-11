@@ -26,7 +26,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 import inference
 from config import settings
-from features import extract_locator, extract_screen, feature_area
+from features import extract_locator, extract_screen, extract_selector, feature_area
 from taxonomy import HAS_ERROR_SIGNAL, category_description, classify
 
 # Exception/error CLASS names. The final segment must start with a capital, so
@@ -569,6 +569,12 @@ def classify_failures(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         extract_locator(f"{r.get('reason','')}\n{r.get('log_text','')}")
         for _, r in failures.iterrows()
     ]
+    # The verbatim selector, kept alongside the normalised value: grouping needs
+    # the element, fixing needs the exact expression.
+    failures["selector"] = [
+        extract_selector(f"{r.get('reason','')}\n{r.get('log_text','')}")
+        for _, r in failures.iterrows()
+    ]
     failures["screen"] = [
         extract_screen(f"{r.get('reason','')}\n{r.get('log_text','')}")
         for _, r in failures.iterrows()
@@ -593,6 +599,12 @@ def locator_hotspots(classified: pd.DataFrame, top: int = 10) -> pd.DataFrame:
     hits = classified[classified["locator"].astype(str).str.len() > 1]
     if hits.empty:
         return pd.DataFrame()
+    def _selectors(group: pd.Series) -> list[str]:
+        """Distinct full selectors used to hunt this element, longest first — the
+        longest is usually the most specific and therefore the most useful."""
+        seen = {s for s in group.tolist() if s}
+        return sorted(seen, key=len, reverse=True)[:3]
+
     out = (
         hits.groupby("locator")
         .agg(
@@ -600,6 +612,7 @@ def locator_hotspots(classified: pd.DataFrame, top: int = 10) -> pd.DataFrame:
             tests_affected=("name", "nunique"),
             devices=("device", "nunique"),
             example_test=("name", "first"),
+            selectors=("selector", _selectors) if "selector" in hits else ("name", "first"),
         )
         .reset_index()
         .sort_values(["tests_affected", "failures"], ascending=False)

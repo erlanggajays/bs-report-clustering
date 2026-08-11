@@ -76,6 +76,25 @@ _LOCATOR_REJECT = re.compile(
 )
 _SCREEN_RE = re.compile(r"\b([A-Z][A-Za-z0-9]*(?:Activity|Screen|Page|Fragment))\b")
 
+# The COMPLETE selector expression, kept verbatim for display. Grouping still uses
+# the semantic value above (so one element is one row), but fixing a locator needs
+# the exact strategy and path, not just the label it was hunting.
+# Matched against the RAW text (escapes intact), because the backslashes are what
+# delimit the JSON string — unescaping first would end the match at the first inner
+# quote and truncate the selector.
+_JSON_SELECTOR_RE = re.compile(r'"selector"\s*:\s*"((?:[^"\\]|\\.)+)"')
+
+# Matched against unescaped text. The xpath pattern deliberately allows spaces and
+# quotes and anchors on a closing bracket, since real xpaths contain both.
+_SELECTOR_PATTERNS = [
+    re.compile(r"by this strategy\s*:\s*(.+?)(?:\s*$|\n)", re.M),
+    re.compile(r"((?:AppiumBy|By)\.\w+\(.*?\)\s*\}?\)?)"),
+    # Any xpath up to a closing bracket that ends the expression. Enumerating the
+    # allowed characters is a losing game (real labels contain "&", "%", "/", ...),
+    # so accept anything but a newline and anchor on a terminator instead.
+    re.compile(r"(//[^\n]{4,300}?\])(?=[\s,\"']|$)"),
+]
+
 _AREAS: list[tuple[str, re.Pattern]] | None = None
 
 
@@ -152,6 +171,35 @@ def extract_locator(text: str, max_len: int = 70) -> str:
             if len(value) < 2 or _LOCATOR_REJECT.search(value):
                 continue
             return value[:max_len]
+    return ""
+
+
+def extract_selector(text: str, max_len: int = 300) -> str:
+    """The full selector expression a failure used, verbatim, or "".
+
+    Complements ``extract_locator``: that one normalises for grouping, this one
+    preserves the exact strategy and path so the locator is actually fixable.
+    """
+    if not text:
+        return ""
+
+    def _clean(raw: str) -> str:
+        return " ".join(raw.split()).rstrip(",;")
+
+    # JSON form first, on the raw text, then unescape the captured value.
+    m = _JSON_SELECTOR_RE.search(text)
+    if m:
+        value = _clean(m.group(1)).replace('\\"', '"').replace("\\'", "'")
+        if len(value) >= 4:
+            return value[:max_len]
+
+    unescaped = text.replace('\\"', '"').replace("\\'", "'")
+    for pattern in _SELECTOR_PATTERNS:
+        m = pattern.search(unescaped)
+        if m:
+            value = _clean(m.group(1))
+            if len(value) >= 4:
+                return value[:max_len]
     return ""
 
 
