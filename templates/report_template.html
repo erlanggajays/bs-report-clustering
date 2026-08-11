@@ -68,16 +68,24 @@
       overflow-wrap: anywhere; }
     /* Numeric columns keep their value (and badge) on one line and stay narrow, so
        they can never be pushed past the panel edge by a long first column. */
-    th.num, td.num { white-space: nowrap; text-align: right; width: 1%; }
-    td.wrap { overflow-wrap: anywhere; word-break: break-word; }
+    /* Give the descriptive first column every spare pixel and shrink the numeric
+       ones to their content — the 100%/1% pair is what forces that split. */
+    th.num, td.num { white-space: nowrap; text-align: right; width: 1%;
+      padding-left: 14px; padding-right: 0; }
+    td.wrap, th.wrap { width: 100%; overflow-wrap: anywhere; word-break: break-word; }
     table.fixed { width: 100%; }
+    /* Align the counts with the first line of the label rather than centring them
+       against a multi-line selector block, and trim the generous default cell
+       padding so the selector text gets the width instead. */
+    table.fixed td, table.fixed th { vertical-align: top; padding-left: 0; padding-right: 0; }
+    table.fixed th.num, table.fixed td.num { padding-left: 16px; }
     /* Last-resort escape hatch: a wide table scrolls inside its own box rather
        than overflowing the panel (the page body must never scroll sideways). */
     .table-scroll { overflow-x: auto; max-width: 100%; }
     /* Locator hotspots: the element groups the row, the full selector(s) make it
        fixable. */
     .loc-target { font-weight: 600; display: block; }
-    code.loc-selector { display: block; margin-top: 4px; font-size: 11px;
+    code.loc-selector { display: block; width: 100%; margin-top: 4px; font-size: 11px;
       font-family: ui-monospace, Menlo, monospace; color: var(--muted);
       background: #f8fafc; border: 1px solid var(--line); border-radius: 6px;
       padding: 4px 6px; overflow-wrap: anywhere; }
@@ -309,8 +317,8 @@
           <div class="table-scroll">
             <table class="fixed">
               <thead><tr>
-                <th>Locator</th>
-                <th class="num">Tests hit</th><th class="num">Failures</th>
+                <th class="wrap">Locator</th>
+                <th class="num">Tests</th><th class="num">Failures</th>
               </tr></thead>
               <tbody>
               {% for l in locator_rows %}
@@ -330,15 +338,21 @@
               </tbody>
             </table>
           </div>
-          <p class="note">One broken locator can explain failures across unrelated tests — fixing it has the widest blast radius.</p>
+          <p class="note">
+            The UI elements that failures were looking for, with the exact selector(s) used.
+            <strong>Tests</strong> is how many different tests hit the same element — a high
+            number means one broken element is breaking many tests, so fixing it once has the
+            widest effect. Rows group by the element itself, so the same element found via two
+            different selectors stays one row.
+          </p>
           {% endif %}
           {% if duration_rows %}
           <h3 class="sub-h" style="margin-top:16px">Runtime outliers</h3>
           <div class="table-scroll">
             <table class="fixed">
               <thead><tr>
-                <th>Scenario</th>
-                <th class="num">Median</th><th class="num">Slowest</th><th class="num">Ratio</th>
+                <th class="wrap">Scenario</th>
+                <th class="num">Typical</th><th class="num">Slowest</th><th class="num">Ratio</th>
               </tr></thead>
               <tbody>
               {% for d in duration_rows %}
@@ -352,12 +366,23 @@
               </tbody>
             </table>
           </div>
-          <p class="note">Median/MAD modified z-score — robust to the outlier itself. A large ratio suggests a hang or retry.</p>
+          <p class="note">
+            These tests sometimes take far longer than they usually do.
+            <strong>Typical</strong> is the middle runtime across all of that test's runs;
+            <strong>Slowest</strong> is its worst single run. A <strong>ratio</strong> of 3×
+            means one run took three times longer than normal — most often the test sat
+            waiting for something that never appeared, until a timeout fired. We compare
+            against the middle value rather than the average, because one very slow run
+            would drag the average up and hide itself.
+          </p>
           {% endif %}
           {% if time_split %}
           <p class="note" style="margin-top:12px">
-            Runtime split: <strong>{{ time_split.browserstack_pct }}%</strong> BrowserStack
-            platform vs <strong>{{ time_split.user_pct }}%</strong> your test code.
+            <strong>Where the time goes:</strong> {{ time_split.browserstack_pct }}% of total
+            device time was BrowserStack setting up — allocating a device, installing the app,
+            cleaning up — and {{ time_split.user_pct }}% was your test code actually running.
+            A high setup share is usually driven by session capabilities such as video and
+            network logs, and by running many short sessions instead of fewer longer ones.
           </p>
           {% endif %}
         </div>
