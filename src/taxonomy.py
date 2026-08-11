@@ -57,8 +57,28 @@ class Rule:
         return False
 
 
-UNCATEGORIZED = Rule("uncategorized", "Unassigned",
-                     description="No rule matched — see the failure clusters below")
+# Whether a failure text contains ANY recognisable error signal. Shared with the
+# clustering engine so the two views of the same failure never disagree: text with
+# no signal is "no diagnostic logs", not "no rule matched".
+HAS_ERROR_SIGNAL = re.compile(
+    r"(?<![\w$])[A-Z]\w*(?:Exception|Error|Failure)\b"   # a real exception class
+    r"|\bError\s*:|\bFATAL\b|\bANR\b|\bassert"
+    r"|\bfailed\b|\bcould not\b|\bunable to\b|\bnot found\b|\bcannot\b"
+    r"|\btimed out\b|EADDRINUSE|is still running after|\bnot available\b",
+    re.I,
+)
+
+# The session produced nothing diagnosable — usually the log capture failed or the
+# session died before writing an error. Distinct from "uncategorized", which means
+# there *is* an error we have no rule for yet; the two need different responses.
+NO_DIAGNOSTICS = Rule(
+    "no-diagnostic-logs", "Infra / re-run",
+    description="No error captured in the logs — re-run with logging to diagnose",
+)
+UNCATEGORIZED = Rule(
+    "uncategorized", "Needs triage",
+    description="An error was captured but no rule matches it yet — add a rule",
+)
 
 
 def _default_rules() -> list[Rule]:
@@ -152,7 +172,7 @@ def _default_rules() -> list[Rule]:
 
 def category_description(category: str) -> str:
     """Human-readable meaning of a category (shown in the report)."""
-    for rule in _rules():
+    for rule in list(_rules()) + [NO_DIAGNOSTICS, UNCATEGORIZED]:
         if rule.category == category:
             return rule.description
     return UNCATEGORIZED.description
@@ -191,9 +211,17 @@ def _rules() -> list[Rule]:
 
 
 def classify(reason: str, log_text: str = "", duration: float = 0.0, status: str = "") -> tuple[str, str]:
-    """Return (category, owner) for a failure. 'uncategorized' if no rule matches."""
+    """Return (category, owner) for a failure.
+
+    Falls back to ``no-diagnostic-logs`` when the text carries no error signal at
+    all, and only to ``uncategorized`` when there *is* an error we have no rule
+    for — separating "we cannot see the failure" from "we have not taught the
+    classifier this failure yet".
+    """
     text = f"{reason}\n{log_text}"
     for rule in _rules():
         if rule.matches(text, duration, status):
             return rule.category, rule.owner
+    if not HAS_ERROR_SIGNAL.search(text):
+        return NO_DIAGNOSTICS.category, NO_DIAGNOSTICS.owner
     return UNCATEGORIZED.category, UNCATEGORIZED.owner

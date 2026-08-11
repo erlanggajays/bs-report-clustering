@@ -88,6 +88,12 @@ class Settings:
             if s.strip()
         )
     )
+    # Log enrichment is entirely network-bound, so it is fetched concurrently.
+    # Kept modest to stay well clear of BrowserStack rate limits (the HTTP session
+    # still retries on 429 with backoff).
+    enrich_workers: int = field(
+        default_factory=lambda: max(1, int(os.environ.get("ENRICH_WORKERS", "8")))
+    )
 
     # HTTP behaviour
     request_timeout_seconds: int = 30

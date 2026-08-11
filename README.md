@@ -122,6 +122,8 @@ Host: `https://api-cloud.browserstack.com/app-automate`.
 | `BUILD_STATUS_FILTER` | Eligible build statuses, comma-sep | `done,failed,timeout` |
 | `ENRICH_LOGS` / `--enrich-logs` | Pull terminal logs for failed sessions to recover real stack traces | off |
 | `HISTORY_DB_PATH` | SQLite file for cross-build history | `data/history.db` |
+| `LOG_SOURCES` | Log sources fetched during enrichment (`crash`, `appium`, `device`, `text`) | `crash,appium` |
+| `ENRICH_WORKERS` | Concurrent log fetches — enrichment is network-bound | `8` |
 
 Sample (`--source file`) runs persist to a **separate** `data/history_sample.db`
 so demo data never pollutes real history. Seed demo history with

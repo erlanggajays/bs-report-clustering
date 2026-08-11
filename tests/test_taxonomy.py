@@ -80,5 +80,20 @@ def test_crashlog_marker_is_app_crash():
     assert owner == "Dev"
 
 
-def test_uncategorized_fallback():
-    assert classify("some totally unknown message", duration=120, status="failed")[0] == "uncategorized"
+def test_signal_free_text_is_no_diagnostic_logs():
+    """Text with no error signal means we could not SEE the failure — a different
+    problem (and owner) from having an error we lack a rule for."""
+    noise = ('Calling AppiumDriver.execute() with args: ["mobile: getCurrentActivity"]\n'
+             "Clearing new command timeout pre-emptively")
+    cat, owner = classify(noise, duration=120, status="failed")
+    assert cat == "no-diagnostic-logs"
+    assert owner == "Infra / re-run"
+
+
+def test_uncategorized_needs_a_rule_not_triage_of_missing_logs():
+    """A real error with no matching rule stays 'uncategorized' — that is the
+    signal to add a rule, and its owner must not read like the category name."""
+    cat, owner = classify("SomethingWeirdException: a brand new failure mode",
+                          duration=120, status="failed")
+    assert cat == "uncategorized"
+    assert owner == "Needs triage"

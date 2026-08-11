@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -147,13 +149,18 @@ def _sessions_to_dataframe(sessions: list[dict[str, Any]]) -> pd.DataFrame:
 
 
 # --- Live API path ----------------------------------------------------------
-_SESSION: requests.Session | None = None
+_LOCAL = threading.local()
 
 
 def _http() -> requests.Session:
-    """A shared requests session with retry/backoff on 429 and 5xx."""
-    global _SESSION
-    if _SESSION is None:
+    """A per-thread requests session with retry/backoff on 429 and 5xx.
+
+    Thread-local because enrichment fetches concurrently and ``requests.Session``
+    is not guaranteed thread-safe. The connection pool is sized to the worker count
+    so concurrent requests do not thrash a too-small pool.
+    """
+    sess = getattr(_LOCAL, "session", None)
+    if sess is None:
         retry = Retry(
             total=settings.http_max_retries,
             backoff_factor=settings.http_backoff_factor,
@@ -162,11 +169,12 @@ def _http() -> requests.Session:
             raise_on_status=False,
         )
         sess = requests.Session()
-        adapter = HTTPAdapter(max_retries=retry)
+        pool = max(10, settings.enrich_workers)
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=pool, pool_maxsize=pool)
         sess.mount("https://", adapter)
         sess.mount("http://", adapter)
-        _SESSION = sess
-    return _SESSION
+        _LOCAL.session = sess
+    return sess
 
 
 def _get(url: str, params: dict[str, Any] | None = None) -> Any:
@@ -439,11 +447,36 @@ def enrich_failure_reasons(df: pd.DataFrame) -> pd.DataFrame:
     for the taxonomy classifier. A present crashlog injects CRASH_MARKER so the
     classifier can tag it as an app crash. Network failures are swallowed per
     session so one bad fetch never aborts the run.
+
+    Fetches run concurrently because the work is purely network-bound — a range
+    run over several builds is otherwise hundreds of sequential round-trips. Only
+    the fetching is threaded: results are applied to the DataFrame afterwards on
+    this thread, since pandas is not safe for concurrent writes.
     """
-    for idx in df.index[df["is_failure"]]:
+    targets = list(df.index[df["is_failure"]])
+    if not targets:
+        return df
+
+    def _fetch(idx: int) -> tuple[int, str, bool]:
         combined, crash = _fetch_session_logs(
             df.at[idx, "build_id"], df.at[idx, "session_id"], df.at[idx, "terminal_logs_url"]
         )
+        return idx, combined, crash
+
+    results: list[tuple[int, str, bool]] = []
+    workers = min(settings.enrich_workers, len(targets))
+    logger.info("      enriching %d failed sessions with %d workers…", len(targets), workers)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_fetch, i) for i in targets]
+        for done, future in enumerate(as_completed(futures), start=1):
+            try:
+                results.append(future.result())
+            except Exception as exc:                    # one bad session is not fatal
+                logger.debug("log fetch failed: %s", exc)
+            if done % 25 == 0:
+                logger.debug("  fetched logs for %d/%d sessions", done, len(targets))
+
+    for idx, combined, crash in results:
         if not combined:
             continue
         marker = f"{CRASH_MARKER}\n" if crash else ""
@@ -451,9 +484,7 @@ def enrich_failure_reasons(df: pd.DataFrame) -> pd.DataFrame:
         # snippet is prepended so the classifier still sees it even if the stored
         # tail is all teardown noise.
         snippet = _extract_error(combined)
-        df.at[idx, "log_text"] = (
-            marker + snippet + "\n" + combined[-_LOG_STORE_CHARS:]
-        )
+        df.at[idx, "log_text"] = marker + snippet + "\n" + combined[-_LOG_STORE_CHARS:]
         if snippet:
             df.at[idx, "reason"] = snippet
     return df

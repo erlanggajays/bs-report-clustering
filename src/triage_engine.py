@@ -27,7 +27,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import inference
 from config import settings
 from features import extract_locator, extract_screen, feature_area
-from taxonomy import category_description, classify
+from taxonomy import HAS_ERROR_SIGNAL, category_description, classify
 
 # Exception/error CLASS names. The final segment must start with a capital, so
 # helper functions such as "Object.errorWithException" are not mistaken for the
@@ -45,18 +45,11 @@ _LOG_PREFIX_RE = re.compile(
     r"^\s*(?:\d{4}-\d{1,2}-\d{1,2}[ T]\d{1,2}:\d{2}:\d{2}(?:[:.]\d+)?)?\s*-?\s*"
     r"(?:\[[^\]]{1,48}\]\s*)*"
 )
-# Whether a failure text contains ANY recognisable error signal. Testing for the
-# presence of a signal is far more robust than blocklisting noise phrases: Appium
-# emits endless bookkeeping variants ("Calling AppiumDriver.execute() with args",
-# "Clearing new command timeout", logcat hex dumps), and each new one would
-# otherwise become its own bogus cluster.
-_HAS_ERROR_SIGNAL = re.compile(
-    r"(?<![\w$])[A-Z]\w*(?:Exception|Error|Failure)\b"   # a real exception class
-    r"|\bError\s*:|\bFATAL\b|\bANR\b|\bassert"
-    r"|\bfailed\b|\bcould not\b|\bunable to\b|\bnot found\b|\bcannot\b"
-    r"|\btimed out\b|EADDRINUSE|is still running after|\bnot available\b",
-    re.I,
-)
+# Presence of an error signal is defined once, in taxonomy, so the cluster view and
+# the category view can never disagree about the same failure. Testing for a signal
+# beats blocklisting noise: Appium emits endless bookkeeping variants and each new
+# one would otherwise become its own bogus cluster.
+_HAS_ERROR_SIGNAL = HAS_ERROR_SIGNAL
 
 
 def _strip_log_prefix(line: str) -> str:

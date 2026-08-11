@@ -43,6 +43,43 @@ def test_extract_error_prefers_most_specific_signal():
     assert "SocketTimeoutException" in _extract_error(raw)
 
 
+def test_enrichment_is_parallel_and_fault_tolerant():
+    """Log enrichment is network-bound; a range run is hundreds of round-trips, so
+    fetches run concurrently. One failing session must not abort the rest."""
+    import time
+
+    from ingestor import _sessions_to_dataframe, enrich_failure_reasons
+
+    raw = [
+        {"hashed_id": f"s{i}", "name": f"t{i}", "status": "failed", "duration": 30,
+         "os_version": "14.0", "device": "S24", "reason": "TIMEOUT",
+         "created_at": "t", "build_hashed_id": "b1"}
+        for i in range(16)
+    ]
+    df = _sessions_to_dataframe(raw)
+
+    def fake(build_id, session_id, terminal_url):
+        time.sleep(0.05)
+        if session_id == "s5":
+            raise RuntimeError("simulated fetch failure")
+        return f"[W3C] NoSuchElementError: could not locate element {session_id}", False
+
+    original = ingestor._fetch_session_logs
+    ingestor._fetch_session_logs = fake
+    try:
+        started = time.time()
+        out = enrich_failure_reasons(df.copy())
+        elapsed = time.time() - started
+    finally:
+        ingestor._fetch_session_logs = original
+
+    sequential = 16 * 0.05
+    assert elapsed < sequential / 2, f"not parallel: {elapsed:.2f}s vs {sequential:.2f}s"
+    assert out["reason"].str.contains("NoSuchElementError").sum() == 15
+    # The session that raised keeps its original reason rather than losing data.
+    assert out.loc[out.session_id == "s5", "reason"].iloc[0] == "TIMEOUT"
+
+
 def test_looks_like_crash():
     assert _looks_like_crash("FATAL EXCEPTION: main\n\tat com.gopay.Foo.bar(Foo.java:1)") is True
     assert _looks_like_crash("No crashes were detected for this session.") is False

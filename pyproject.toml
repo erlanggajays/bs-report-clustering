@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "test-analytics-engine"
 version = "0.1.0"
 description = "Ingest BrowserStack mobile test results, cluster failures with ML/NLP, and render a standalone HTML analytics report."
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = [
     "pandas>=2.2",
     "numpy>=1.24",
@@ -47,7 +47,7 @@ addopts = "-q"
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py39"
 
 [tool.ruff.lint]
 # Pyflakes (F), pycodestyle errors (E), import sorting (I).
@@ -55,6 +55,6 @@ select = ["E", "F", "I"]
 ignore = ["E501"]  # line length is handled by the formatter, not enforced hard
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.9"
 ignore_missing_imports = true   # sklearn / plotly / scipy ship partial or no stubs
 warn_unused_ignores = true
