@@ -451,6 +451,7 @@ def generate_report(
         feature_area_chart=_feature_area_chart(ds.get("feature_area_health")),
         feature_area_rows=_records(ds.get("feature_area_health")),
         locator_rows=_records(ds.get("locator_hotspots")),
+        locator_omitted=ds.get("locator_omitted", 0),
         duration_rows=_records(ds.get("duration_outliers"), limit=6),
         time_split=ds.get("time_split") or {},
         alpha=settings.inference_alpha,

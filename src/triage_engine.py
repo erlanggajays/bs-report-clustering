@@ -618,22 +618,31 @@ def _label_clusters_with_category(
         cluster.owner = owner_by_category.get(dominant, "")
 
 
-def locator_hotspots(classified: pd.DataFrame, top: int = 10) -> pd.DataFrame:
-    """Rank failing UI locators by blast radius.
+def locator_hotspots(
+    classified: pd.DataFrame, top: int = 6, min_tests: int = 2
+) -> tuple[pd.DataFrame, int]:
+    """Rank failing UI locators by blast radius, and count the ones left out.
 
-    One broken locator often explains failures across many unrelated tests, which
-    makes it a higher-leverage fix than any individual test.
+    Returns (hotspots, omitted). A locator that breaks a *single* test is not a
+    hotspot: it carries no more information than the test itself, which the
+    categories section already lists. Requiring ``min_tests`` keeps the panel to
+    locators whose fix pays off across several tests, and the omitted count is
+    returned so the report can say so rather than silently hiding them.
     """
     if classified.empty or "locator" not in classified:
-        return pd.DataFrame()
+        return pd.DataFrame(), 0
     hits = classified[classified["locator"].astype(str).str.len() > 1]
     if hits.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), 0
+
     def _selectors(group: pd.Series) -> list[str]:
-        """Distinct full selectors used to hunt this element, longest first — the
-        longest is usually the most specific and therefore the most useful."""
+        """The single most specific selector for this element.
+
+        Listing every variant was the main driver of the panel's height; the longest
+        is the most specific, and so the most useful one to act on.
+        """
         seen = {s for s in group.tolist() if s}
-        return sorted(seen, key=len, reverse=True)[:3]
+        return sorted(seen, key=len, reverse=True)[:1]
 
     out = (
         hits.groupby("locator")
@@ -646,10 +655,11 @@ def locator_hotspots(classified: pd.DataFrame, top: int = 10) -> pd.DataFrame:
         )
         .reset_index()
         .sort_values(["tests_affected", "failures"], ascending=False)
-        .head(top)
         .reset_index(drop=True)
     )
-    return out
+    omitted = int((out["tests_affected"] < min_tests).sum())
+    out = out[out["tests_affected"] >= min_tests].head(top).reset_index(drop=True)
+    return out, omitted
 
 
 def run_triage(
@@ -664,6 +674,7 @@ def run_triage(
     classified, categories = classify_failures(df)
     _label_clusters_with_category(clusters, classified)
 
+    _locator_rows, _locator_omitted = locator_hotspots(classified)
     findings = inference.significant_findings(df)
     cat_table, cat_p, cat_resid = inference.category_by_dimension(classified, "os_version")
 
@@ -678,7 +689,8 @@ def run_triage(
         "feature_area_health": _feature_area_health(df),
         "findings": findings,
         "category_by_os": (cat_table, cat_p, cat_resid),
-        "locator_hotspots": locator_hotspots(classified),
+        "locator_hotspots": _locator_rows,
+        "locator_omitted": _locator_omitted,
         "duration_outliers": inference.duration_outliers(df),
         "time_split": inference.time_split(df),
         "perf_vs_failure": inference.performance_vs_failure(df),

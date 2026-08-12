@@ -263,6 +263,18 @@
         <div class="note">via root-cause grouping</div></div>
     </div>
 
+    <!-- Suite health: how bad is it, and is it getting worse? Donut and trend answer
+         the same question, so they sit together. -->
+    <section>
+      <h2>Suite health</h2>
+      {# Donut and trend share one row: "how bad is it now" beside "is it getting
+         worse". Alone in a two-column grid the donut left half the row empty. #}
+      <div class="grid {{ 'two-col' if trend_chart else '' }}">
+        <div class="panel">{{ status_donut | safe }}</div>
+        {% if trend_chart %}<div class="panel">{{ trend_chart | safe }}</div>{% endif %}
+      </div>
+    </section>
+
     <!-- Cross-platform view (only on a multi-project run) -->
     {% if platform_rows %}
     <section>
@@ -352,10 +364,86 @@
     </section>
     {% endif %}
 
-    <!-- Charts -->
+    <!-- Failure categories (rule-based taxonomy + owner routing) -->
+    {% if category_rows %}
     <section>
+      <h2>What is failing, and who owns it</h2>
+      <div class="panel" style="margin-bottom:18px">{{ cluster_chart | safe }}</div>
       <div class="grid two-col">
-        <div class="panel">{{ status_donut | safe }}</div>
+        <div class="panel">{{ category_chart | safe }}</div>
+        <div class="panel">
+          <div class="cat-head"><span class="h-cat">Category</span><span>Owner</span><span class="h-count">Failures</span></div>
+          {% for c in category_details %}
+          <details class="cat">
+            <summary>
+              <span class="cat-name">{{ c.category }}</span>
+              <span class="badge {{ c.owner_class }}">{{ c.owner }}</span>
+              <span class="cat-count">{{ c.count }}</span>
+            </summary>
+            <p class="cat-desc">
+              {{ c.count }} failure{{ '' if c.count == 1 else 's' }} across
+              {{ c.test_count }} test{{ '' if c.test_count == 1 else 's' }}{% if c.description %} · {{ c.description }}{% endif %}
+            </p>
+            {% if c.root_causes %}
+            <div class="sub-label">Root causes ({{ c.root_causes | length }})</div>
+            <div class="rc-head">
+              <span class="rc-count">Fails</span>
+              <span class="rc-label">Distinct root cause</span>
+              <span class="rc-conf" title="How tightly this group's failures resemble each other">Confidence</span>
+            </div>
+            <ul class="cat-causes">
+              {% for rc in c.root_causes %}
+              <li>
+                <span class="rc-count">{{ rc.size }}</span>
+                {% if rc.session_url %}
+                  <a class="t-link rc-label" href="{{ rc.session_url }}" target="_blank" rel="noopener"
+                     title="Open an example session in BrowserStack">{{ rc.label }}</a>
+                {% else %}<span class="rc-label">{{ rc.label }}</span>{% endif %}
+                <span class="rc-conf" title="How tightly this group's failures resemble each other">{{ rc.confidence_pct }}%</span>
+              </li>
+              {% endfor %}
+            </ul>
+            {% endif %}
+            <div class="sub-label">Tests affected ({{ c.test_count }})</div>
+            <div class="rc-head t-head">
+              <span class="t-name">Test</span>
+              <span class="t-meta">Failures · device</span>
+            </div>
+            <ul class="cat-tests">
+              {% for t in c.tests %}
+              <li>
+                {% if t.session_url %}
+                  <a class="t-name t-link" href="{{ t.session_url }}" target="_blank" rel="noopener"
+                     title="Open this session in BrowserStack (video + logs)">{{ t.name }}</a>
+                {% else %}
+                  <span class="t-name">{{ t.name }}</span>
+                {% endif %}
+                <span class="t-meta">×{{ t.count }}{% if t.device %} · {{ t.device }}{% endif %}</span>
+              </li>
+              {% endfor %}
+            </ul>
+          </details>
+          {% endfor %}
+          <p class="note" style="margin-top:10px">
+            Click a category to see which tests fell into it, then click a test name to open
+            its BrowserStack session (video + logs; sign-in required). Categories route each
+            failure to an owner — app bugs vs test-automation gaps vs infra flakes;
+            uncategorized failures fall through to the clusters below.
+          </p>
+        </div>
+      </div>
+    </section>
+    {% endif %}
+
+    <!-- Business-area health + actionable atoms -->
+    {% if feature_area_rows or locator_rows or duration_rows %}
+    <section>
+      <h2>Where failures concentrate</h2>
+      <div class="grid two-col">
+        {% if feature_area_chart %}<div class="panel">{{ feature_area_chart | safe }}</div>{% endif %}
+        {# The device/OS heatmap belongs with the other concentration views, not with
+           the health charts: it answers "where do failures cluster", the same question
+           as business area and locator hotspots. #}
         <div class="panel">
           {{ device_heatmap | safe }}
           {% if top_risk_cell %}
@@ -367,22 +455,6 @@
           </p>
           {% endif %}
         </div>
-      </div>
-    </section>
-
-    <!-- Suite health trend (needs >= 2 historical builds) -->
-    {% if trend_chart %}
-    <section>
-      <div class="panel">{{ trend_chart | safe }}</div>
-    </section>
-    {% endif %}
-
-    <!-- Business-area health + actionable atoms -->
-    {% if feature_area_rows or locator_rows or duration_rows %}
-    <section>
-      <h2>Where failures concentrate</h2>
-      <div class="grid two-col">
-        {% if feature_area_chart %}<div class="panel">{{ feature_area_chart | safe }}</div>{% endif %}
         <div class="panel">
           {% if locator_rows %}
           <h3 class="sub-h">Locator hotspots</h3>
@@ -411,11 +483,13 @@
             </table>
           </div>
           <p class="note">
-            The UI elements that failures were looking for, with the exact selector(s) used.
-            <strong>Tests</strong> is how many different tests hit the same element — a high
-            number means one broken element is breaking many tests, so fixing it once has the
-            widest effect. Rows group by the element itself, so the same element found via two
-            different selectors stays one row.
+            UI elements that broke <strong>more than one test</strong>, with the most specific
+            selector used to find each. A high <strong>Tests</strong> count means one broken
+            element is breaking many tests, so fixing it once has the widest effect.
+            {% if locator_omitted %}
+            {{ locator_omitted }} further locator{{ '' if locator_omitted == 1 else 's' }}
+            affected a single test each and are listed under their category above.
+            {% endif %}
           </p>
           {% endif %}
           {% if duration_rows %}
@@ -458,6 +532,63 @@
           </p>
           {% endif %}
         </div>
+      </div>
+    </section>
+    {% endif %}
+
+    <!-- Flakiness -->
+    {% if flaky_rows %}
+    <section>
+      <h2>Top flaky scenarios</h2>
+      <div class="panel">
+        <table>
+          <thead><tr>
+            <th>Scenario</th>
+            <th title="Test sessions — one per device, per build">Sessions</th>
+            {% if flaky_source == 'history' %}<th title="Distinct builds this scenario appeared in">Builds</th>{% endif %}
+            <th>Failure rate</th>
+            <th title="Pass↔fail alternation across builds — true run-over-run flakiness">Flip rate</th>
+            {% if flaky_source == 'history' %}<th title="Share of builds where this scenario both passed and failed (device- or parameter-specific instability)">Mixed</th>{% endif %}
+            <th>Flakiness</th>
+          </tr></thead>
+          <tbody>
+          {% for r in flaky_rows %}
+            <tr>
+              <td>
+                {{ r.name }}
+                {% if r.low_sample %}<span class="badge mid" title="Too few runs to be confident — score shrunk and ranked below well-sampled scenarios">low data</span>{% endif %}
+              </td>
+              <td>{{ r.runs }}</td>
+              {% if flaky_source == 'history' %}<td>{{ r.builds }}</td>{% endif %}
+              <td>{{ (r.failure_rate * 100) | round(0) }}%</td>
+              <td>{{ (r.flip_rate * 100) | round(0) }}%</td>
+              {% if flaky_source == 'history' %}<td>{{ (r.mixed_rate * 100) | round(0) }}%</td>{% endif %}
+              <td style="min-width:140px">
+                <div class="bar"><span style="width: {{ (r.flakiness_index * 100) | round(0) }}%"></span></div>
+                <span class="note">{{ r.flakiness_index }}</span>
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        <p class="note" style="margin-top:8px">
+          {% if flaky_source == 'history' %}
+            <strong>Sessions</strong> counts every execution of a scenario — one per device, and
+            one per case in a data-driven test — so a scenario can show many sessions inside a
+            single build. Because those are not sequential re-runs,
+            <strong>Flip rate</strong> is measured across <em>builds</em> (each build collapsed to
+            one outcome): that is genuine run-over-run flakiness.
+            <strong>Mixed</strong> is the share of builds where the scenario both passed and
+            failed — device- or parameter-specific instability rather than time-based flakiness.
+            Scores are shrunk toward 0 when few builds are available, and rows below
+            {{ min_builds }} builds are marked <em>low data</em> and ranked last, since flakiness
+            cannot be established from a single run.
+          {% else %}
+            Single-build view — <strong>Sessions</strong> counts one execution per device (and per
+            case in data-driven tests). Flip rate needs history across builds; it populates once
+            more builds are ingested.
+          {% endif %}
+        </p>
       </div>
     </section>
     {% endif %}
@@ -532,139 +663,6 @@
           <p class="empty">Not enough profiled sessions in both groups to compare yet.</p>
           {% endif %}
         </div>
-      </div>
-    </section>
-    {% endif %}
-
-    <!-- Failure categories (rule-based taxonomy + owner routing) -->
-    {% if category_rows %}
-    <section>
-      <h2>Failure categories</h2>
-      <div class="grid two-col">
-        <div class="panel">{{ category_chart | safe }}</div>
-        <div class="panel">
-          <div class="cat-head"><span class="h-cat">Category</span><span>Owner</span><span class="h-count">Failures</span></div>
-          {% for c in category_details %}
-          <details class="cat">
-            <summary>
-              <span class="cat-name">{{ c.category }}</span>
-              <span class="badge {{ c.owner_class }}">{{ c.owner }}</span>
-              <span class="cat-count">{{ c.count }}</span>
-            </summary>
-            <p class="cat-desc">
-              {{ c.count }} failure{{ '' if c.count == 1 else 's' }} across
-              {{ c.test_count }} test{{ '' if c.test_count == 1 else 's' }}{% if c.description %} · {{ c.description }}{% endif %}
-            </p>
-            {% if c.root_causes %}
-            <div class="sub-label">Root causes ({{ c.root_causes | length }})</div>
-            <div class="rc-head">
-              <span class="rc-count">Fails</span>
-              <span class="rc-label">Distinct root cause</span>
-              <span class="rc-conf" title="How tightly this group's failures resemble each other">Confidence</span>
-            </div>
-            <ul class="cat-causes">
-              {% for rc in c.root_causes %}
-              <li>
-                <span class="rc-count">{{ rc.size }}</span>
-                {% if rc.session_url %}
-                  <a class="t-link rc-label" href="{{ rc.session_url }}" target="_blank" rel="noopener"
-                     title="Open an example session in BrowserStack">{{ rc.label }}</a>
-                {% else %}<span class="rc-label">{{ rc.label }}</span>{% endif %}
-                <span class="rc-conf" title="How tightly this group's failures resemble each other">{{ rc.confidence_pct }}%</span>
-              </li>
-              {% endfor %}
-            </ul>
-            {% endif %}
-            <div class="sub-label">Tests affected ({{ c.test_count }})</div>
-            <div class="rc-head t-head">
-              <span class="t-name">Test</span>
-              <span class="t-meta">Failures · device</span>
-            </div>
-            <ul class="cat-tests">
-              {% for t in c.tests %}
-              <li>
-                {% if t.session_url %}
-                  <a class="t-name t-link" href="{{ t.session_url }}" target="_blank" rel="noopener"
-                     title="Open this session in BrowserStack (video + logs)">{{ t.name }}</a>
-                {% else %}
-                  <span class="t-name">{{ t.name }}</span>
-                {% endif %}
-                <span class="t-meta">×{{ t.count }}{% if t.device %} · {{ t.device }}{% endif %}</span>
-              </li>
-              {% endfor %}
-            </ul>
-          </details>
-          {% endfor %}
-          <p class="note" style="margin-top:10px">
-            Click a category to see which tests fell into it, then click a test name to open
-            its BrowserStack session (video + logs; sign-in required). Categories route each
-            failure to an owner — app bugs vs test-automation gaps vs infra flakes;
-            uncategorized failures fall through to the clusters below.
-          </p>
-        </div>
-      </div>
-    </section>
-    {% endif %}
-
-    <!-- Failure cluster breakdown -->
-    <section>
-      <h2>Failure cluster breakdown</h2>
-      <div class="panel">{{ cluster_chart | safe }}</div>
-</section>
-
-    <!-- Flakiness -->
-    {% if flaky_rows %}
-    <section>
-      <h2>Top flaky scenarios</h2>
-      <div class="panel">
-        <table>
-          <thead><tr>
-            <th>Scenario</th>
-            <th title="Test sessions — one per device, per build">Sessions</th>
-            {% if flaky_source == 'history' %}<th title="Distinct builds this scenario appeared in">Builds</th>{% endif %}
-            <th>Failure rate</th>
-            <th title="Pass↔fail alternation across builds — true run-over-run flakiness">Flip rate</th>
-            {% if flaky_source == 'history' %}<th title="Share of builds where this scenario both passed and failed (device- or parameter-specific instability)">Mixed</th>{% endif %}
-            <th>Flakiness</th>
-          </tr></thead>
-          <tbody>
-          {% for r in flaky_rows %}
-            <tr>
-              <td>
-                {{ r.name }}
-                {% if r.low_sample %}<span class="badge mid" title="Too few runs to be confident — score shrunk and ranked below well-sampled scenarios">low data</span>{% endif %}
-              </td>
-              <td>{{ r.runs }}</td>
-              {% if flaky_source == 'history' %}<td>{{ r.builds }}</td>{% endif %}
-              <td>{{ (r.failure_rate * 100) | round(0) }}%</td>
-              <td>{{ (r.flip_rate * 100) | round(0) }}%</td>
-              {% if flaky_source == 'history' %}<td>{{ (r.mixed_rate * 100) | round(0) }}%</td>{% endif %}
-              <td style="min-width:140px">
-                <div class="bar"><span style="width: {{ (r.flakiness_index * 100) | round(0) }}%"></span></div>
-                <span class="note">{{ r.flakiness_index }}</span>
-              </td>
-            </tr>
-          {% endfor %}
-          </tbody>
-        </table>
-        <p class="note" style="margin-top:8px">
-          {% if flaky_source == 'history' %}
-            <strong>Sessions</strong> counts every execution of a scenario — one per device, and
-            one per case in a data-driven test — so a scenario can show many sessions inside a
-            single build. Because those are not sequential re-runs,
-            <strong>Flip rate</strong> is measured across <em>builds</em> (each build collapsed to
-            one outcome): that is genuine run-over-run flakiness.
-            <strong>Mixed</strong> is the share of builds where the scenario both passed and
-            failed — device- or parameter-specific instability rather than time-based flakiness.
-            Scores are shrunk toward 0 when few builds are available, and rows below
-            {{ min_builds }} builds are marked <em>low data</em> and ranked last, since flakiness
-            cannot be established from a single run.
-          {% else %}
-            Single-build view — <strong>Sessions</strong> counts one execution per device (and per
-            case in data-driven tests). Flip rate needs history across builds; it populates once
-            more builds are ingested.
-          {% endif %}
-        </p>
       </div>
     </section>
     {% endif %}
