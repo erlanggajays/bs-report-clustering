@@ -87,6 +87,7 @@ def compute_exec_metrics(
         top_cell = {
             "device": worst["device"],
             "os_version": worst["os_version"],
+            "os_label": str(worst.get("os_label") or worst["os_version"]),
             "failure_rate": float(worst["failure_rate"]),
             "risk_score": float(worst.get("risk_score", worst["failure_rate"])),
             "failed": int(worst["failed"]),

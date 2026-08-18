@@ -27,7 +27,13 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 import inference
 from config import settings
-from features import extract_locator, extract_screen, extract_selector, feature_area
+from features import (
+    extract_locator,
+    extract_screen,
+    extract_selector,
+    feature_area,
+    os_label,
+)
 from taxonomy import HAS_ERROR_SIGNAL, category_description, classify
 
 # Exception/error CLASS names. The final segment must start with a capital, so
@@ -382,14 +388,31 @@ def _wilson_lower_bound(failures: int, total: int, z: float) -> float:
     return max(0.0, (centre - margin) / denom)
 
 
+def _os_labels(df: pd.DataFrame) -> pd.Series:
+    """Platform-qualified OS labels for a frame, e.g. ``iOS 17.3``.
+
+    ``os_version`` is left untouched: it stays the raw value BrowserStack supplied,
+    so persisted history keeps comparing like with like across schema versions.
+    """
+    if "os_version" not in df:
+        return pd.Series(["unknown"] * len(df), index=df.index)
+    platforms = df["platform"] if "platform" in df else pd.Series("", index=df.index)
+    return pd.Series(
+        [os_label(p, v) for p, v in zip(platforms, df["os_version"])], index=df.index
+    )
+
+
 def device_anomaly(df: pd.DataFrame) -> pd.DataFrame:
-    """Failure distribution per (device, os_version), ranked with statistical rigor.
+    """Failure distribution per (device, OS), ranked with statistical rigor.
 
     Adds a Wilson lower-bound ``risk_score`` and a ``low_sample`` flag so cells
     with too few runs don't dominate the ranking. Sorted by ``risk_score``.
     """
+    df = df.copy()
+    if "os_label" not in df:
+        df["os_label"] = _os_labels(df)
     grouped = (
-        df.groupby(["device", "os_version"])
+        df.groupby(["device", "os_version", "os_label"])
         .agg(total=("session_id", "count"), failed=("is_failure", "sum"))
         .reset_index()
     )
@@ -666,9 +689,10 @@ def run_triage(
     df: pd.DataFrame, history: pd.DataFrame | None = None
 ) -> dict[str, Any]:
     """Convenience wrapper returning every triage artifact in one dict."""
-    # Derive the business dimension before any inference runs on it.
+    # Derive the analysable dimensions before any inference runs on them.
     df = df.copy()
     df["feature_area"] = df["name"].map(feature_area)
+    df["os_label"] = _os_labels(df)
 
     clusters, annotated = cluster_failures(df)
     classified, categories = classify_failures(df)
@@ -676,7 +700,7 @@ def run_triage(
 
     _locator_rows, _locator_omitted = locator_hotspots(classified)
     findings = inference.significant_findings(df)
-    cat_table, cat_p, cat_resid = inference.category_by_dimension(classified, "os_version")
+    cat_table, cat_p, cat_resid = inference.category_by_dimension(classified, "os_label")
 
     return {
         "clusters": clusters,
@@ -698,6 +722,7 @@ def run_triage(
         # Always present on a multi-platform run so a combined pass rate can never
         # hide one platform's regression behind the other's green.
         "platform_breakdown": _platform_breakdown(df),
+        "platform_comparability": platform_comparability(df),
         "area_by_platform": _area_by_platform(df),
     }
 
@@ -714,7 +739,63 @@ def _platform_breakdown(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
     out["failure_rate"] = (out["failures"] / out["sessions"]).round(3)
+    # Provenance, so the reader can see whether the two columns are comparable.
+    meta = df.groupby("platform").agg(
+        app_versions=("app_version", lambda s: sorted({v for v in s if v})),
+        ran_from=("created_at", "min"), ran_to=("created_at", "max"),
+    ) if "app_version" in df and "created_at" in df else None
+    if meta is not None:
+        out["app_versions"] = out["platform"].map(
+            lambda p: ", ".join(meta.loc[p, "app_versions"]) or "unknown"
+        )
+        out["ran_at"] = out["platform"].map(lambda p: str(meta.loc[p, "ran_from"])[:10])
     return out.sort_values("failure_rate", ascending=False).reset_index(drop=True)
+
+
+def platform_comparability(df: pd.DataFrame, max_gap_days: int = 1) -> dict[str, Any]:
+    """Whether the platforms in a multi-platform run can be compared to each other.
+
+    A side-by-side platform table invites the reader to attribute every gap to the
+    platform. That only holds when both platforms exercised the same app build at
+    roughly the same time; otherwise a gap is equally explicable as a regression
+    between the two builds, and the table must say so rather than imply a defect.
+    """
+    empty: dict[str, Any] = {"comparable": True, "reasons": []}
+    if "platform" not in df or df["platform"].nunique() < 2:
+        return empty
+
+    reasons: list[str] = []
+    if "app_version" in df:
+        by_platform = {
+            p: sorted({v for v in g["app_version"] if v})
+            for p, g in df.groupby("platform")
+        }
+        distinct = {tuple(v) for v in by_platform.values() if v}
+        if len(distinct) > 1:
+            shown = "; ".join(f"{p} on {', '.join(v) or 'unknown'}"
+                              for p, v in sorted(by_platform.items()))
+            reasons.append(f"different app builds ({shown})")
+
+    stale: list[str] = []
+    if "created_at" in df:
+        ends = pd.to_datetime(
+            df.groupby("platform")["created_at"].max(), errors="coerce", utc=True
+        ).dropna()
+        if len(ends) > 1:
+            gap_days = (ends.max() - ends.min()).days
+            if gap_days > max_gap_days:
+                reasons.append(f"runs {gap_days} days apart")
+            # Name the platform that is behind. A stale side reports the failures of
+            # an older build, so a green cell there is not evidence of a green build
+            # today — the reader has to know which column to distrust.
+            newest = ends.max()
+            for platform, last in ends.items():
+                behind = (newest - last).days
+                if behind > max_gap_days:
+                    stale.append(f"{platform} is {behind} days behind "
+                                 f"(last ran {last.date()})")
+
+    return {"comparable": not reasons, "reasons": reasons, "stale": stale}
 
 
 def _area_by_platform(df: pd.DataFrame) -> pd.DataFrame:
@@ -729,9 +810,18 @@ def _area_by_platform(df: pd.DataFrame) -> pd.DataFrame:
     counts = df.pivot_table(
         index="feature_area", columns="platform", values="session_id", aggfunc="count"
     )
+    failures = df.pivot_table(
+        index="feature_area", columns="platform", values="is_failure", aggfunc="sum"
+    )
     # Drop cells with too little data to be worth showing.
     pivot = pivot.where(counts >= settings.inference_min_group)
-    return pivot.dropna(how="all").reset_index()
+    out = pivot.dropna(how="all").copy()
+    # Carry the counts alongside each rate. A bare "0.0%" reads as "nothing to see";
+    # "0 of 7 failed" tells the reader how much evidence that zero rests on.
+    for platform in pivot.columns:
+        out[f"n__{platform}"] = counts.reindex(out.index)[platform]
+        out[f"f__{platform}"] = failures.reindex(out.index)[platform]
+    return out.reset_index()
 
 
 def _perf_hotspots(df: pd.DataFrame, top: int = 8) -> pd.DataFrame:

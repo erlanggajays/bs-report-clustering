@@ -27,20 +27,40 @@ from config import settings
 # is why word boundaries work and multi-word phrases allow optional whitespace.
 DEFAULT_FEATURE_AREAS: list[tuple[str, str]] = [
     ("mutual-fund", r"\bMutual\s*Fund|\bMFL\d?\b|\bProspectus|\bCAGR\b|Assets?\s*To\s*Sell"),
-    ("gold", r"\bGold\b"),
-    ("deposito", r"\bDeposito|\bJago\b|\bTerm\s*Deposit"),
+    # Gold is the only product priced in grams. "Denomination" alone is NOT a gold
+    # marker — deposit products use denomination pills for amounts too.
+    ("gold", r"\bGold\b|\bGram\b"),
+    ("deposito", r"\bDeposito|\bJago\b|\bTerm\s*Deposit|\bTD\b|\bMaturity|\bPrincipal"
+                 r"|\bDeposit\s*Period|\bEstimated\s*(?:Net|Final)\s*Balance"
+                 r"|\bProjected\s*Interest"),
     ("tabungan", r"\bTabungan|\bUsaha\b"),
     ("simpanan", r"\bSimpanan|\bInterest\s*(?:Rate|Summary|Calculator)"),
+    ("autosave", r"\bAuto\s*(?:Debit|Save|Sweep)|\bAutosave|\bAutosweep|\bFrequenc(?:y|ies)"),
+    ("budget", r"\bBudget"),
     ("investment", r"\bInvestment|\bInvest\s*Here"),
+    # Viewing and selling what the user already owns, as opposed to buying it. Kept
+    # after the product areas above so a named product still wins, and the Asset
+    # alternatives are narrow so the bare word "asset" is not pulled out of them.
+    ("portfolio", r"\bPortfolio|\bAsset\s*(?:Detail|Holding|Screen)|\bFund\s*Fact\s*Sheet"
+                  r"|\bSell\s*(?:Cta|Enter\s*Amount)"),
     ("kyc", r"\bKyc\b|\bSelfie\b|\bLicense\b|\bConsent\b"),
-    ("pinjaman", r"\bPinjaman"),
-    ("order-history", r"\bOrder\s*History|\bOrder\b|\bTransaction"),
+    ("pinjaman", r"\bPinjam|\bRepay"),
+    ("order-history", r"\bOrder\s*History|\bOrder\b|\bTransaction|\bFilter\s*Chip"
+                      r"|\bMulti\s*(?:Service|Method)|\bMultiservice"),
     ("money-landing", r"\bMoney\s*Landing|\bPayment\s*Method|\bSavings\s*(?:And|Product)"),
     ("financial-report", r"\bExpense|\bFinancial\s*Report"),
-    ("accounts", r"\bAdd\s*More\s*Accounts|\bSource\s*Of\s*Fund|\bBalance\s*Card|\bDefault\s*Balance"),
+    ("accounts", r"\bAdd\s*More\s*Accounts?|\bSource\s*Of\s*Fund|\bBalance\s*Card"
+                 r"|\bDefault\s*Balance|\bLinking\b|\bOneklik|\bDirect\s*Debit"),
+    # The GoPay Saldo surface itself: pockets, coins, tiles, top-up and transfer.
+    ("balance", r"\bGopay\s*Saldo|\bSaldo\b|\b(?:Main\s*)?Pocket\b|\bCoins\b|\bPayment\s*Tiles"
+                r"|\bAdd\s*Money|\bTopup\b|\bTransfer\b|\bReceiving\s*Method"
+                r"|\bBalance\s*Page|\bLow\s*Balance"),
+    ("rewards", r"\bReward|\bBenefits?\b|\bUpgrade\s*Now"),
     ("dira", r"\bDira\b"),
+    # help before content: a help *article* is a help test, not a content test.
     ("help", r"\bHelp\b"),
-    ("onboarding", r"\bOnboarding"),
+    ("content", r"\bArticle|\bEducation|\bBanner"),
+    ("onboarding", r"\bOnboarding|\bPersonal\s*Details|\bSetup\s*Now|\bFresh\s*(?:Gps\s*)?User"),
 ]
 
 # Insert a space at camelCase boundaries so \b-anchored patterns can match tokens
@@ -132,6 +152,29 @@ def feature_area(test_name: str) -> str:
         if pattern.search(haystack):
             return area
     return "unmapped"
+
+
+# BrowserStack reports the family in the session's "os" field and the release in
+# "os_version". The two must be joined for display: a bare "17.3" is a valid iOS
+# release *and* a plausible Android one, so labelling versions with a hardcoded
+# family mislabels every session on the other platform.
+_PLATFORM_LABELS = {"ios": "iOS", "android": "Android", "windows": "Windows", "os x": "macOS"}
+
+
+def os_label(platform: str, os_version: str) -> str:
+    """Display label for an OS, e.g. ``iOS 17.3``.
+
+    Falls back to the bare version when the platform is missing or unrecognised —
+    the family cannot be inferred from the version number, so an unqualified
+    version is preferable to a guess.
+    """
+    version = str(os_version or "").strip()
+    if version.lower() == "unknown":
+        version = ""
+    family = _PLATFORM_LABELS.get(str(platform or "").strip().lower(), "")
+    if not family:
+        return version or "unknown"
+    return f"{family} {version}".strip()
 
 
 _BRACKET_PAIRS = {")": "(", "]": "[", "}": "{"}

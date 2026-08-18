@@ -65,8 +65,8 @@ _FINDING_PHRASING = {
         "other devices",
         "Looks environment-specific. Reproduce on this device before treating it as a product bug.",
     ),
-    "os_version": (
-        "Tests on Android {level} fail {ratio}× more often than on other versions",
+    "os_label": (
+        "Tests on {level} fail {ratio}× more often than on other OS versions",
         "other OS versions",
         "Looks OS-specific. Check behaviour differences on this version.",
     ),
@@ -153,18 +153,29 @@ def owner_class(owner: str) -> str:
 
 
 def _records(frame: pd.DataFrame | None, limit: int | None = None) -> list[dict]:
-    """DataFrame -> list of dicts for the template ([] when absent/empty)."""
+    """DataFrame -> list of dicts for the template ([] when absent/empty).
+
+    NaN is normalised to ``None`` so templates can test for a missing cell. Jinja's
+    ``is not none`` is true for a float NaN, which previously rendered a literal
+    "nan%" wherever a pivot had no data for a combination (an area that only exists
+    on one platform, for instance).
+    """
     if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
         return []
     out = frame.head(limit) if limit else frame
-    return out.to_dict(orient="records")
+    return out.astype(object).where(pd.notna(out), None).to_dict(orient="records")
 
 
 def _platform_names(frame: pd.DataFrame | None) -> list[str]:
-    """Platform column names from the area x platform pivot (for table headers)."""
+    """Platform column names from the area x platform pivot (for table headers).
+
+    ``n__``/``f__`` columns carry each cell's session and failure counts, so they
+    are companions to a platform column, never platforms in their own right.
+    """
     if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
         return []
-    return [c for c in frame.columns if c != "feature_area"]
+    return [c for c in frame.columns
+            if c != "feature_area" and not str(c).startswith(("n__", "f__"))]
 
 
 def _trim(text: str, limit: int = 58) -> str:
@@ -330,13 +341,16 @@ def _feature_area_chart(fa: pd.DataFrame | None) -> str:
 def _device_heatmap(device_risk: pd.DataFrame) -> str:
     if device_risk.empty:
         return "<p class='empty'>No device data available.</p>"
+    # os_label, not os_version: the raw version carries no platform, and prefixing
+    # every column with one family mislabels the other platform's devices.
+    axis = "os_label" if "os_label" in device_risk else "os_version"
     pivot = device_risk.pivot_table(
-        index="device", columns="os_version", values="failure_rate", aggfunc="mean"
+        index="device", columns=axis, values="failure_rate", aggfunc="mean"
     )
     fig = go.Figure(
         data=go.Heatmap(
             z=pivot.values,
-            x=[f"Android {c}" for c in pivot.columns],
+            x=[str(c) for c in pivot.columns],
             y=pivot.index,
             colorscale="Reds",
             zmin=0,
@@ -458,6 +472,8 @@ def generate_report(
         perf_rows=_records(ds.get("perf_hotspots")),
         perf_findings=_records(ds.get("perf_vs_failure")),
         platform_rows=_records(ds.get("platform_breakdown")),
+        platform_comparability=ds.get("platform_comparability") or {},
+        min_group=settings.inference_min_group,
         area_by_platform=_records(ds.get("area_by_platform")),
         platforms=_platform_names(ds.get("area_by_platform")),
     )

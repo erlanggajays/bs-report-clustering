@@ -3,7 +3,13 @@ from __future__ import annotations
 
 import pandas as pd
 
-from features import extract_locator, extract_screen, extract_selector, feature_area
+from features import (
+    extract_locator,
+    extract_screen,
+    extract_selector,
+    feature_area,
+    os_label,
+)
 from inference import (
     attribute,
     duration_outliers,
@@ -44,6 +50,58 @@ def test_feature_area_precedence():
     lands. Ordering in DEFAULT_FEATURE_AREAS encodes that precedence."""
     name = "verifyUserNavigatesToKycSelfieWhenTappingCreateTabunganUsahaButton"
     assert feature_area(name) == "tabungan"
+
+
+def test_feature_area_covers_real_suite_vocabulary():
+    """Areas added after auditing the 55 names that were landing in `unmapped`."""
+    cases = {
+        "testUserAbleToSeeChooseFrequencySectionOnAutoDebitPage: ...": "autosave",
+        "verifyGoPaySaldoIsDisableForAutoSweepIsOn: ...": "autosave",
+        "testUserAbleToCreateAndDeleteMonthlyBudget: ...": "budget",
+        "testAssetFundFactSheetSection: fund fact sheet details": "portfolio",
+        "testYourPortfolioDetails: Verify your portfolio details": "portfolio",
+        "testUserAbleToSeeAppropriateMaturityOptions: ...": "deposito",
+        "testUserAbleToSeeDefaultDepositPeriodSection: ...": "deposito",
+        "testSwapBetweenIdrAndGramDenomination: ...": "gold",
+        "verifyBackNavigationFromMainPocket: ...": "balance",
+        "verifyPaymentTilesArePresent: Topup Transfer and QR Tiles": "balance",
+        "verifyPinjamButtonIsClickableAndRedirectedUserToGopayPinjamPage: ...": "pinjaman",
+        "verifyUserCanNavigateToBCAOneklikLinkingPageFromAddMoreAccountPage: ...": "accounts",
+        "testClaimRewardAndUpgradeNowBenefitsSection: ...": "rewards",
+        "testArticleEducationVisible: Verify user is able to see article education": "content",
+        "verifyPersonalDetailsQuestionSectionIsVisible: ...": "onboarding",
+    }
+    for name, expected in cases.items():
+        assert feature_area(name) == expected, name
+
+
+def test_denomination_alone_is_not_gold():
+    """Deposit products use denomination pills for amounts, so the word cannot
+    route to gold on its own — only gram/IDR vocabulary is gold-specific."""
+    interest = ("testUserAbleToSelectDenominationPillsAndAppropriateInterestRate: "
+                "Verify interest rate reflected")
+    assert feature_area(interest) == "simpanan"
+    assert feature_area("testDenominationButtonsForIdrAndGram: ...") == "gold"
+
+
+def test_help_article_is_help_not_content():
+    """`help` is ordered before `content` so a help article stays a help test."""
+    assert feature_area("testHelpArticleIsVisible: help article page") == "help"
+
+
+# --- OS labelling ----------------------------------------------------------
+def test_os_label_qualifies_version_with_platform():
+    """A bare version cannot be labelled: 17.3 is a real iOS release and a
+    plausible Android one, so the family must come from the session's platform."""
+    assert os_label("ios", "17.3") == "iOS 17.3"
+    assert os_label("IOS", "18.6") == "iOS 18.6"
+    assert os_label("android", "14.0") == "Android 14.0"
+
+
+def test_os_label_falls_back_rather_than_guessing():
+    assert os_label("", "17.3") == "17.3"          # unknown platform: no family
+    assert os_label(None, None) == "unknown"
+    assert os_label("ios", "unknown") == "iOS"     # family known, version not
 
 
 def test_locator_and_screen():

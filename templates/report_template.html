@@ -202,6 +202,17 @@
     .sample-banner code { background: rgba(146,64,14,.12); padding: 1px 5px; border-radius: 4px; }
     .window-banner { background: #eff6ff; border: 1px solid #93c5fd; color: #1e40af;
       border-radius: var(--radius); padding: 12px 16px; margin-bottom: 22px; font-size: var(--fs-data); }
+    /* Comparability warning: sits inside a section, so it is tighter than the
+       page-level banners above and leads with a coloured rule. */
+    .caveat { background: #fef3c7; border-left: 3px solid #f59e0b; color: #92400e;
+      border-radius: 0 var(--radius) var(--radius) 0; padding: 10px 14px;
+      margin: 0 0 16px; font-size: var(--fs-data); line-height: 1.55; }
+    .tight { font-size: var(--fs-meta); color: var(--muted); font-weight: 400;
+      line-height: 1.4; word-break: break-all; }
+    /* Safety net for a wide table: scrolls inside its own wrapper rather than
+       being clipped by the grid column. Applied to the wrapper, never the table
+       itself — `display:block` on a table breaks column alignment. */
+    .scrollx { overflow-x: auto; }
     footer { color: var(--muted); font-size: var(--fs-meta); margin-top: 40px; text-align: center; }
   </style>
 </head>
@@ -279,14 +290,38 @@
     {% if platform_rows %}
     <section>
       <h2>Platform breakdown</h2>
+      {% if platform_comparability and not platform_comparability.comparable %}
+      {# The reader will otherwise read every gap below as a platform defect. #}
+      <div class="caveat">
+        <strong>These platforms are not directly comparable:</strong>
+        {{ platform_comparability.reasons | join('; ') }}.
+        A gap between the columns may be a regression between the two app builds
+        rather than a platform difference. Re-run both platforms on the same build
+        before attributing any gap to a platform.
+        {% if platform_comparability.stale %}
+        <div style="margin-top:8px">
+          <strong>{{ platform_comparability.stale | join('; ') }}.</strong>
+          Its numbers describe that older build, so a low failure rate on that
+          column is not evidence the area passes today.
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
       <div class="grid two-col">
         <div class="panel">
           <table>
+            {# Build and date live under the platform name rather than in their own
+               columns: this table sits in a half-width panel, and a build id is far
+               too long to survive as a column without being truncated to uselessness. #}
             <thead><tr><th>Platform</th><th>Project</th><th>Sessions</th><th>Tests</th><th>Failure rate</th></tr></thead>
             <tbody>
             {% for p in platform_rows %}
               <tr>
-                <td><strong>{{ p.platform }}</strong></td>
+                <td>
+                  <strong>{{ p.platform }}</strong>
+                  {% if p.app_versions %}<div class="mono tight">{{ p.app_versions }}</div>{% endif %}
+                  {% if p.ran_at %}<div class="tight">ran {{ p.ran_at }}</div>{% endif %}
+                </td>
                 <td>{{ p.project or '—' }}</td>
                 <td>{{ p.sessions }}</td>
                 <td>{{ p.tests }}</td>
@@ -301,19 +336,35 @@
         <div class="panel">
           <h3 class="sub-h">Business area × platform</h3>
           <table>
-            <thead><tr><th>Area</th>{% for p in platforms %}<th>{{ p }}</th>{% endfor %}</tr></thead>
+            <thead><tr><th>Area</th>{% for p in platforms %}<th>{{ p }}<div class="tight">failure rate</div></th>{% endfor %}</tr></thead>
             <tbody>
             {% for r in area_by_platform %}
               <tr>
                 <td>{{ r.feature_area }}</td>
                 {% for p in platforms %}
-                  <td>{% if r[p] is not none %}{{ (r[p] * 100) | round(0) }}%{% else %}—{% endif %}</td>
+                  {# The counts sit beside the rate, not in a tooltip: "0%" alone
+                     reads as "nothing here", when it may be 0 of 7 that all passed.
+                     The word "failed" is repeated in every cell on purpose — a bare
+                     "0/7" was read as "0 of 7 passed", the exact opposite. #}
+                  <td>{% if r[p] is not none %}{{ (r[p] * 100) | round(0) }}%<span
+                    class="tight"> {{ (r['f__' ~ p] | int) }} of {{ (r['n__' ~ p] | int) }} failed</span>{% else %}<span
+                    class="tight">— not enough data</span>{% endif %}</td>
                 {% endfor %}
               </tr>
             {% endfor %}
             </tbody>
           </table>
-          <p class="note">A gap between platforms for the same area points to a platform-specific defect; a high rate on both points to the product.</p>
+          {% if platform_comparability and not platform_comparability.comparable %}
+          <p class="note">Cells are shown only where a platform ran at least
+            {{ min_group }} sessions for the area; a dash means too little data.
+            Because the two platforms ran different app builds, a gap here is
+            <strong>not</strong> evidence of a platform-specific defect on its own.</p>
+          {% else %}
+          <p class="note">Cells are shown only where a platform ran at least
+            {{ min_group }} sessions for the area; a dash means too little data.
+            A gap between platforms for the same area points to a platform-specific
+            defect; a high rate on both points to the product.</p>
+          {% endif %}
         </div>
         {% endif %}
       </div>
@@ -449,7 +500,7 @@
           {% if top_risk_cell %}
           <p class="note" style="margin-top:8px">
             Highest-risk environment: <strong>{{ top_risk_cell.device }}</strong> on
-            Android {{ top_risk_cell.os_version }} —
+            {{ top_risk_cell.os_label or top_risk_cell.os_version }} —
             {{ (top_risk_cell.failure_rate * 100) | round(0) }}% failure
             ({{ top_risk_cell.failed }}/{{ top_risk_cell.total }}).
           </p>

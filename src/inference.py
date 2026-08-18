@@ -124,7 +124,7 @@ def significant_findings(
     """
     # platform first: on a cross-platform run it is usually the strongest split.
     dimensions = dimensions or [
-        "platform", "device", "os_version", "feature_area", "app_version",
+        "platform", "device", "os_label", "feature_area", "app_version",
     ]
     frames = [attribute(df, d) for d in dimensions]
     frames = [f for f in frames if not f.empty]
@@ -154,7 +154,7 @@ def significant_findings(
 
 
 def category_by_dimension(
-    failures: pd.DataFrame, dimension: str = "os_version"
+    failures: pd.DataFrame, dimension: str = "os_label"
 ) -> tuple[pd.DataFrame, float | None, pd.DataFrame]:
     """Cross failure categories with a dimension.
 

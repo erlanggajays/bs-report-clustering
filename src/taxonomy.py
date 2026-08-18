@@ -107,17 +107,46 @@ def _default_rules() -> list[Rule]:
                        r"Encountered internal error running command.*still running"),
              description="Appium could not stop/reset the app between tests"),
         # Appium/driver server problems on the host — not the app under test.
+        # Appium/driver server problems on the host — not the app under test. The
+        # iOS phrasings name WebDriverAgent, the XCUITest counterpart of the
+        # uiautomator2 server. Deliberately no bare "XCUITestDriver" pattern: that
+        # string prefixes every iOS log line, including genuine element failures,
+        # and this rule runs before element-not-found.
         Rule("appium-server-error", "Infra / re-run",
              patterns=(r"EADDRINUSE", r"address already in use",
                        r"Could not configure Appium server",
                        r"a driver or plugin tried to update the server",
                        r"uiautomator2 server .*(?:crash|not responding)",
-                       r"instrumentation process (?:crash|cannot be initialized)"),
+                       r"instrumentation process (?:crash|cannot be initialized)",
+                       r"unable to start WebDriverAgent",
+                       r"could not proxy command to the remote server",
+                       r"socket hang up",
+                       r"failed to generate view elements",
+                       r"page source may be invalid"),
              description="Appium/driver server failure on the host (port clash, driver crash)"),
+        # The automation asked for a command this platform's driver does not
+        # implement — hideKeyboard on iOS is the recurring one. Re-running cannot
+        # help, so this is test-automation work, not infra.
+        Rule("unsupported-driver-command", "Test automation",
+             patterns=(r"failed to hide keyboard",
+                       r"an? request was received using an HTTP method that is not supported",
+                       r"UnsupportedCommandException",
+                       r"not (?:yet )?implemented for (?:this )?(?:platform|driver)"),
+             description="Driver command unsupported on this platform (change the test)"),
+        # The step could not be resolved to a single element, so nothing was even
+        # attempted. A test-authoring problem, not a missing element.
+        Rule("ambiguous-test-step", "Test automation",
+             patterns=(r"request lacks specificity", r"ambiguous target element",
+                       r"cannot be mapped to a single UI element"),
+             description="Test step too vague to resolve to one element (rewrite the step)"),
         Rule("webview-context", "Test automation",
              patterns=(r"NoSuchContextException", r"WEBVIEW_\S* is not available",
                        r"context .*not available", r"failed to (switch|attach).*context",
-                       r"no such context"),
+                       r"no such context",
+                       # Real wording: "Context switching failed. ... webview context
+                       # WEBVIEW_IN_APP is either not focused or not present."
+                       r"context switching failed", r"webview context",
+                       r"WEBVIEW_\S*.*(?:not focused|not present)"),
              description="WebView / native context bridge unavailable"),
         # Auth before generic backend: a 401/403 is a test-setup problem, not a 5xx.
         Rule("missing-auth-header", "Test setup",
@@ -157,11 +186,24 @@ def _default_rules() -> list[Rule]:
                        # JUnit writes 'expected: "x" but was: "y"' — the colon means a
                        # pattern requiring a space after "expected" silently misses,
                        # and a real balance mismatch was filed as an infra abort.
-                       r"expected\b.{0,120}?but was",
-                       r"expected\b.{0,60}?to (be|equal|contain)",
+                       # AssertJ uses the participle ("Expecting value to be true but
+                       # was false", "Expecting actual: ... to contain: ..."), which a
+                       # pattern anchored on "expected" never matches.
+                       r"expect(?:ed|ing)\b.{0,120}?but was",
+                       r"expect(?:ed|ing)\b.{0,80}?to (be|equal|contain)",
                        r"assertEquals", r"assertTrue", r"assertion failed",
                        r"\bmismatch\b", r"\bshould (be|equal|contain)\b",
-                       r"did not match expected"),
+                       r"did not match expected",
+                       # The suite's own assertion helpers report a screen expectation
+                       # in prose ("Tabungan icon is not visible", "Add More Accounts
+                       # page title is not displayed"). These are assertions the app
+                       # failed, not driver-level lookup errors — element-not-found is
+                       # evaluated first, so anything the driver actually raised keeps
+                       # that category.
+                       r"\b(?:is|are|was|were) not (?:visible|displayed|shown|present|"
+                       r"enabled|selected|editable)\b",
+                       r"\b(?:toggle|switch|checkbox|radio) is (?:not )?(?:on|off|"
+                       r"checked|unchecked|enabled|disabled)\b"),
              description="Functional assertion failed (likely a real bug)"),
         # Last resort. Explicit infra phrases only; the duration/status heuristics
         # are suppressed whenever the text shows a genuine in-test error.

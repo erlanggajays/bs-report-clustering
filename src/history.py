@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     is_failure  INTEGER,
     reason      TEXT,
     duration    REAL,
+    platform    TEXT,
     os_version  TEXT,
     device      TEXT,
     app_version TEXT,
@@ -50,8 +51,20 @@ CREATE INDEX IF NOT EXISTS idx_sessions_build   ON sessions(build_id);
 # Columns persisted from the sessions DataFrame (sensitive URLs excluded).
 _SESSION_COLS = [
     "session_id", "name", "status", "reason",
-    "duration", "os_version", "device", "app_version", "created_at",
+    "duration", "platform", "os_version", "device", "app_version", "created_at",
 ]
+
+# Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves an
+# existing table alone, so each one is added explicitly on connect.
+_ADDED_COLUMNS = (("sessions", "platform", "TEXT"),)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns missing from a database created by an earlier version."""
+    for table, column, col_type in _ADDED_COLUMNS:
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
 
 def _connect(db_path: str | Path | None = None) -> sqlite3.Connection:
@@ -59,6 +72,8 @@ def _connect(db_path: str | Path | None = None) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.executescript(_SCHEMA)
+    with conn:
+        _migrate(conn)
     return conn
 
 
@@ -84,15 +99,16 @@ def persist_build(
             (
                 r["session_id"], build_id, project, r["name"], r["status"],
                 int(bool(r["is_failure"])), r["reason"], float(r["duration"]),
-                r["os_version"], r["device"], r.get("app_version", ""), r["created_at"],
+                r.get("platform", ""), r["os_version"], r["device"],
+                r.get("app_version", ""), r["created_at"],
             )
             for _, r in df.iterrows()
         ]
         conn.executemany(
             "INSERT OR REPLACE INTO sessions "
             "(session_id, build_id, project, name, status, is_failure, reason, "
-            " duration, os_version, device, app_version, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            " duration, platform, os_version, device, app_version, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             rows,
         )
 

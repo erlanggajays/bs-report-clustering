@@ -121,3 +121,76 @@ def test_uncategorized_needs_a_rule_not_triage_of_missing_logs():
                           duration=120, status="failed")
     assert cat == "uncategorized"
     assert owner == "Needs triage"
+
+
+# --- iOS / framework-assertion vocabulary -----------------------------------
+def test_ios_driver_failures_are_infra_not_element_problems():
+    """WebDriverAgent is the XCUITest counterpart of the uiautomator2 server, so
+    its startup failures are host problems. Note there is deliberately no bare
+    'XCUITestDriver' rule: that string prefixes every iOS log line."""
+    wda = ("Encountered internal error running command: Error: Unable to start "
+           "WebDriverAgent session. Original error: Could not proxy command to the "
+           "remote server. Original error: socket hang up")
+    assert classify(wda, duration=120, status="failed") == (
+        "appium-server-error", "Infra / re-run")
+    stale_source = ("Execution failed during attempt 3; Failed to generate view "
+                    "elements after 3 attempts. Page source may be invalid or the "
+                    "Appium driver server is not responding.")
+    assert classify(stale_source, duration=120, status="failed")[0] == "appium-server-error"
+
+
+def test_xcuitest_element_errors_stay_element_not_found():
+    """The iOS driver prefix must not divert a genuine element failure to infra."""
+    reason = ("2026-08-13 11:40:38:882 - [132232de][XCUITestDriver@ce39] Encountered "
+              "internal error running command: NoSuchElementError: An element could "
+              "not be located on the page using the given search parameters.")
+    assert classify(reason, duration=120, status="failed")[0] == "element-not-found"
+
+
+def test_unsupported_driver_command_is_test_automation_not_infra():
+    """hideKeyboard is unimplemented on iOS, so re-running can never help — the
+    test has to change, which makes the owner Test automation, not Infra."""
+    reason = ("Failed to hide keyboard: The requested resource could not be found, "
+              "or a request was received using an HTTP method that is not supported "
+              "by the mapped resource.")
+    assert classify(reason, duration=120, status="failed") == (
+        "unsupported-driver-command", "Test automation")
+
+
+def test_framework_visibility_assertions_are_assertion_failures():
+    """The suite's assertion helpers report an unmet screen expectation in prose.
+    That is an assertion the app failed, not a driver lookup error."""
+    for reason in (
+        "Multiple Failures (1 failure) -- failure 1 --Tabungan icon is not visible "
+        "at TabunganAssertions.lambda$assertTabunganHomePage$0(TabunganAssertions.java:16)",
+        "[Download order history button is not visible] Expecting value to be true but was false",
+        "Gopay Saldo widget info icon is not displayed at FinanceAssertion.lambda$x$5",
+        "Set as Default Payment Method toggle is not ON at TabunganAssertions.lambda$y$8",
+    ):
+        assert classify(reason, duration=120, status="failed") == (
+            "assertion-failure", "Product bug"), reason
+
+
+def test_assertj_participle_phrasing_is_matched():
+    """AssertJ writes the participle ("Expecting"), which a pattern anchored on
+    "expected" silently misses — the same class of bug as the JUnit colon."""
+    assert classify('Expecting actual: "Time 19:21" to contain: "20:07"',
+                    duration=120, status="failed")[0] == "assertion-failure"
+    assert classify("Expecting value to be true but was false",
+                    duration=120, status="failed")[0] == "assertion-failure"
+
+
+def test_context_switch_failure_is_webview_context():
+    reason = ("Context switching failed. Check server logs for more details.; The app "
+              "associated with webview context WEBVIEW_IN_APP is either not focused "
+              "or not present.")
+    assert classify(reason, duration=120, status="failed") == (
+        "webview-context", "Test automation")
+
+
+def test_ambiguous_step_is_not_a_missing_element():
+    """Nothing was looked for, so this is a test-authoring problem."""
+    reason = ("Request lacks specificity - 'home page' cannot be mapped to a single "
+              "UI element or text string for verification.; Ambiguous target element")
+    assert classify(reason, duration=120, status="failed") == (
+        "ambiguous-test-step", "Test automation")
