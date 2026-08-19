@@ -13,6 +13,7 @@ import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -303,6 +304,43 @@ def get_recent_builds_for_project(project_id: int, last_n: int) -> list[dict[str
     eligible.sort(key=lambda b: b.get("created_at", ""), reverse=True)
     cap = max(1, min(last_n, settings.max_range_builds))
     return eligible[:cap]
+
+
+def find_builds_by_name(
+    project_id: int, wanted: Sequence[str]
+) -> list[tuple[str, dict[str, Any]]]:
+    """Match requested build names against a project's builds.
+
+    Returns (requested_name, build) pairs for the names that matched. An exact name
+    match wins; failing that a case-insensitive substring match is accepted so the
+    trailing run number alone ("174456408") is enough to identify a build. An
+    ambiguous substring is an error rather than a guess — silently analysing the
+    wrong build is far worse than asking for the full name.
+
+    Names that match nothing here are simply absent from the result: a name belongs
+    to exactly one project, and the caller checks every name matched *somewhere*.
+    """
+    payload = _get(PROJECT_DETAIL_ENDPOINT.format(project_id=project_id))
+    project = payload.get("project", payload)
+    builds = project.get("builds", [])
+    matched: list[tuple[str, dict[str, Any]]] = []
+    for name in wanted:
+        needle = str(name).strip()
+        if not needle:
+            continue
+        exact = [b for b in builds if str(b.get("name", "")).strip() == needle]
+        hits = exact or [
+            b for b in builds if needle.lower() in str(b.get("name", "")).lower()
+        ]
+        if not exact and len(hits) > 1:
+            names = ", ".join(str(b.get("name", "?")) for b in hits[:4])
+            raise IngestionError(
+                f"Build name '{needle}' matches {len(hits)} builds ({names}…). "
+                "Pass the full name so the right build is analysed."
+            )
+        if hits:
+            matched.append((needle, hits[0]))
+    return matched
 
 
 def _fetch_sessions_for_build(build_id: str) -> list[dict[str, Any]]:
@@ -607,6 +645,12 @@ def ingest(
             raise IngestionError("No sessions found for the requested project(s).")
         df = pd.concat(frames, ignore_index=True)
         build_meta = _combined_meta(metas, projects)
+        # Carry the constituent builds so the caller persists each one separately.
+        # Storing the combined frame under the synthetic combined id would rewrite
+        # every session's build_id, re-parenting rows already in the database and
+        # flattening the per-build history the trend and flakiness depend on.
+        if len(metas) > 1:
+            build_meta["builds"] = metas
         sessions = []  # already normalised above
 
     else:
@@ -625,6 +669,165 @@ def ingest(
         df = fetch_profiles(df)
 
     return df, build_meta
+
+
+def _ingest_one_build(
+    build: dict[str, Any], project_name: str, username: str | None, do_enrich: bool
+) -> pd.DataFrame | None:
+    """Fetch, enrich and persist a single build; return its sessions (None if empty).
+
+    Persisting here — per real build, with that build's own metadata — is what keeps
+    per-build history intact. A caller that persisted the *combined* frame instead
+    would re-parent every session to one synthetic build and flatten the trend.
+    """
+    import history  # local import: history is a lower-level storage module
+
+    build.setdefault("project", project_name)
+    build.setdefault("user_name", username)
+    build_id = build.get("hashed_id") or build.get("build_id")
+    if not build_id:
+        return None
+    part = _sessions_to_dataframe(_fetch_sessions_for_build(build_id))
+    if do_enrich:
+        part = enrich_failure_reasons(part)
+    if settings.enrich_profiling:
+        part = fetch_profiles(part)
+    if part.empty:
+        return None
+    part["build_id"] = build_id
+    part.loc[part["project"] == "", "project"] = project_name
+    history.persist_build(build, part, db_path=settings.history_db_path)
+    logger.info("    + build %s… (%d sessions)", build_id[:12], len(part))
+    return part
+
+
+def _window_meta(
+    combined: pd.DataFrame, projects: list[str], username: str | None,
+    name: str | None = None,
+) -> dict[str, Any]:
+    """Header metadata for a run spanning several builds."""
+    n_builds = int(combined["build_id"].nunique())
+    dates = sorted(d for d in combined["created_at"].tolist() if d)
+    date_from = dates[0][:10] if dates else ""
+    date_to = dates[-1][:10] if dates else ""
+    return {
+        "project": " + ".join(projects),
+        "projects": projects,
+        "is_multi_project": len(projects) > 1,
+        "user_name": username,
+        "name": name or f"Last {n_builds} builds",
+        "hashed_id": f"{n_builds} builds · {date_from} → {date_to}",
+        "status": "range",
+        "created_at": date_to,
+        "is_range": True,
+        "n_builds": n_builds,
+        "date_from": date_from,
+        "date_to": date_to,
+    }
+
+
+def _projects_to_search(project: str | list[str] | None) -> list[tuple[str, int]]:
+    """(name, id) pairs to scan for a named build.
+
+    With projects given, only those are scanned — one call each, and it respects an
+    explicit narrowing. With none given, every project on the account is listed and
+    scanned, because a build name does not say which project owns it. Callers stop
+    as soon as every requested name is found, so the common case costs one or two
+    extra calls rather than one per project.
+    """
+    if project:
+        return [(name, _resolve_project_id(name)) for name in as_project_list(project)]
+    payload = _get(PROJECTS_ENDPOINT)
+    listing = payload if isinstance(payload, list) else payload.get("projects", [])
+    found = [
+        (str(p.get("name", "")), int(p["id"]))
+        for p in listing
+        if isinstance(p, dict) and p.get("id") is not None
+    ]
+    if not found:
+        raise IngestionError("No projects visible on this account to search for builds.")
+    logger.info("  no --project given: searching %d project(s) for the build name(s)",
+                len(found))
+    return found
+
+
+def ingest_builds(
+    username: str | None = None,
+    source: str = "api",
+    project: str | None = None,
+    build_names: Sequence[str] | None = None,
+    enrich_logs: bool | None = None,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Ingest an explicit set of builds, named as BrowserStack shows them.
+
+    Pinning builds is the only way to compare platforms like for like when their
+    newest builds differ in scope — a partial 24-test Android run against a full
+    iOS regression is not a platform comparison. Every requested name must match,
+    because silently dropping one would produce a single-platform report that still
+    looks like a comparison.
+    """
+    if source != "api":
+        raise IngestionError(
+            "Selecting builds by name requires --source api "
+            "(build names only exist on BrowserStack, not in the local sample data)."
+        )
+
+    username = username or settings.target_user
+    wanted = [str(n).strip() for n in (build_names or []) if str(n).strip()]
+    if not wanted:
+        raise IngestionError("No build names given.")
+    do_enrich = settings.enrich_failure_logs if enrich_logs is None else enrich_logs
+
+    # Resolve every name BEFORE fetching anything. Sessions, log enrichment and
+    # profiling cost minutes per build, so a typo in the second name must not be
+    # discovered only after the first build has been fully ingested.
+    resolved: list[tuple[str, dict[str, Any]]] = []
+    seen_builds: set[str] = set()
+    unmatched = set(wanted)
+    searched: list[str] = []
+    for name, project_id in _projects_to_search(project):
+        if not unmatched:
+            break  # every name found; no reason to keep listing projects
+        searched.append(name)
+        found = 0
+        # Only still-missing names are searched, which is what lets the scan stop early.
+        for requested, build in find_builds_by_name(project_id, sorted(unmatched)):
+            unmatched.discard(requested)
+            build_id = str(build.get("hashed_id") or build.get("build_id") or "")
+            # One build belongs to one project, but two requested names can resolve
+            # to it (a full name and its run number). Ingesting it twice would
+            # double every count in the report.
+            if build_id in seen_builds:
+                continue
+            seen_builds.add(build_id)
+            resolved.append((name, build))
+            found += 1
+        if found:
+            logger.info("  project '%s': resolved %d build(s)", name, found)
+
+    if unmatched:
+        raise IngestionError(
+            f"These build names matched no build in {', '.join(searched)}: "
+            f"{', '.join(sorted(unmatched))}. Check the name, and that the build is "
+            "recent enough to still be listed by the API."
+        )
+
+    frames: list[pd.DataFrame] = []
+    for project_name, build in resolved:
+        part = _ingest_one_build(build, project_name, username, do_enrich)
+        if part is not None:
+            frames.append(part)
+
+    if not frames:
+        raise IngestionError("The selected builds contained zero sessions.")
+
+    combined = pd.concat(frames, ignore_index=True)
+    # The header names the projects the builds actually came from, not what was
+    # asked for: with --project omitted there is nothing to echo, and the sessions
+    # themselves are the authority on which project owns them.
+    owning = sorted({p for p, _ in resolved})
+    label = f"Selected {combined['build_id'].nunique()} builds"
+    return combined, _window_meta(combined, owning, username, name=label)
 
 
 def ingest_range(
@@ -657,23 +860,9 @@ def ingest_range(
             builds = get_recent_builds_for_project(_resolve_project_id(name), last_n)
             logger.info("  project '%s': %d builds", name, len(builds))
             for b in builds:
-                b.setdefault("project", name)
-                b.setdefault("user_name", username)
-                bid = b.get("hashed_id") or b.get("build_id")
-                if not bid:
-                    continue
-                part = _sessions_to_dataframe(_fetch_sessions_for_build(bid))
-                if do_enrich:
-                    part = enrich_failure_reasons(part)
-                if settings.enrich_profiling:
-                    part = fetch_profiles(part)
-                if part.empty:
-                    continue
-                part["build_id"] = bid
-                part.loc[part["project"] == "", "project"] = name
-                history.persist_build(b, part, db_path=settings.history_db_path)
-                frames.append(part)
-                logger.info("    + build %s… (%d sessions)", bid[:12], len(part))
+                part = _ingest_one_build(b, name, username, do_enrich)
+                if part is not None:
+                    frames.append(part)
         if not frames:
             raise IngestionError("No sessions found across the selected builds.")
         combined = pd.concat(frames, ignore_index=True)
@@ -698,25 +887,7 @@ def ingest_range(
     if combined.empty:
         raise IngestionError("Range contained zero sessions.")
 
-    n_builds = int(combined["build_id"].nunique())
-    dates = sorted(d for d in combined["created_at"].tolist() if d)
-    date_from = dates[0][:10] if dates else ""
-    date_to = dates[-1][:10] if dates else ""
-    window_meta = {
-        "project": " + ".join(projects),
-        "projects": projects,
-        "is_multi_project": len(projects) > 1,
-        "user_name": username,
-        "name": f"Last {n_builds} builds",
-        "hashed_id": f"{n_builds} builds · {date_from} → {date_to}",
-        "status": "range",
-        "created_at": date_to,
-        "is_range": True,
-        "n_builds": n_builds,
-        "date_from": date_from,
-        "date_to": date_to,
-    }
-    return combined, window_meta
+    return combined, _window_meta(combined, projects, username)
 
 
 if __name__ == "__main__":

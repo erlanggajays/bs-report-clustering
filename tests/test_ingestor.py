@@ -203,3 +203,162 @@ def test_fetch_sessions_stops_when_offset_ignored(monkeypatch):
     monkeypatch.setattr(ingestor, "_get", lambda url, params=None: same_page)
     sessions = ingestor._fetch_sessions_for_build("build123")
     assert len(sessions) == 100
+
+
+# --- selecting builds by name ----------------------------------------------
+_BUILD_LIST = {"project": {"id": 1, "name": "P", "builds": [
+    {"hashed_id": "and1", "name": "gopay_consumer_app_android_tests - 174456408",
+     "status": "failed", "created_at": "2026-08-18T10:00:00.000Z"},
+    {"hashed_id": "and2", "name": "gopay_consumer_app_android_tests - 174469448",
+     "status": "failed", "created_at": "2026-08-18T22:00:00.000Z"},
+    {"hashed_id": "loc1", "name": "erlangga.jaya triggered from Mac OS X",
+     "status": "done", "created_at": "2026-08-04T10:00:00.000Z"},
+]}}
+
+
+def test_find_builds_by_exact_name(monkeypatch):
+    monkeypatch.setattr(ingestor, "_get", lambda url, params=None: _BUILD_LIST)
+    pairs = ingestor.find_builds_by_name(
+        1, ["gopay_consumer_app_android_tests - 174456408"])
+    assert len(pairs) == 1
+    assert pairs[0][1]["hashed_id"] == "and1"
+
+
+def test_find_builds_by_run_number_alone(monkeypatch):
+    """The trailing run number is enough when it identifies one build."""
+    monkeypatch.setattr(ingestor, "_get", lambda url, params=None: _BUILD_LIST)
+    pairs = ingestor.find_builds_by_name(1, ["174469448"])
+    assert pairs[0][1]["hashed_id"] == "and2"
+
+
+def test_ambiguous_build_name_is_an_error_not_a_guess(monkeypatch):
+    """Analysing the wrong build silently is worse than demanding the full name."""
+    monkeypatch.setattr(ingestor, "_get", lambda url, params=None: _BUILD_LIST)
+    with pytest.raises(IngestionError):
+        ingestor.find_builds_by_name(1, ["gopay_consumer_app_android_tests"])
+
+
+def test_exact_match_beats_a_substring(monkeypatch):
+    """A name that is also a substring of a longer one must not be ambiguous."""
+    listing = {"project": {"builds": [
+        {"hashed_id": "short", "name": "build - 1", "status": "done"},
+        {"hashed_id": "long", "name": "build - 12", "status": "done"},
+    ]}}
+    monkeypatch.setattr(ingestor, "_get", lambda url, params=None: listing)
+    pairs = ingestor.find_builds_by_name(1, ["build - 1"])
+    assert len(pairs) == 1 and pairs[0][1]["hashed_id"] == "short"
+
+
+def test_unmatched_build_name_raises(monkeypatch):
+    """Dropping a name would yield a one-platform report that still looks
+    like a comparison, so every requested name must resolve."""
+    monkeypatch.setattr(ingestor, "_get", lambda url, params=None: _BUILD_LIST)
+    monkeypatch.setattr(ingestor, "_resolve_project_id", lambda name: 1)
+    monkeypatch.setattr(ingestor, "as_project_list", lambda p: ["P"])
+    with pytest.raises(IngestionError) as err:
+        ingestor.ingest_builds(source="api", project="P",
+                               build_names=["174456408", "no_such_build"])
+    assert "no_such_build" in str(err.value)
+
+
+def test_selecting_builds_requires_the_api_source():
+    """Raised as IngestionError so the CLI reports it cleanly, not as a traceback."""
+    with pytest.raises(IngestionError):
+        ingestor.ingest_builds(source="file", build_names=["x"])
+
+
+def test_no_build_names_is_an_error():
+    with pytest.raises(IngestionError):
+        ingestor.ingest_builds(source="api", build_names=[])
+
+
+def test_a_build_is_never_ingested_twice(monkeypatch):
+    """A full name and its run number resolve to the same build; ingesting it
+    twice would double every count in the report."""
+    monkeypatch.setattr(ingestor, "_get", lambda url, params=None: _BUILD_LIST)
+    monkeypatch.setattr(ingestor, "_resolve_project_id", lambda name: 1)
+    monkeypatch.setattr(ingestor, "_fetch_sessions_for_build", lambda bid: [
+        {"hashed_id": f"{bid}-1", "name": "t", "status": "passed", "duration": 90,
+         "os": "android", "os_version": "14.0", "device": "S24",
+         "created_at": "2026-08-18T10:00:00.000Z", "build_hashed_id": bid}])
+    import history
+    monkeypatch.setattr(history, "persist_build", lambda *a, **k: None)
+    df, meta = ingestor.ingest_builds(
+        source="api", project=["P"], enrich_logs=False,
+        build_names=["gopay_consumer_app_android_tests - 174456408", "174456408"])
+    assert len(df) == 1
+    assert meta["n_builds"] == 1
+
+
+def _session_stub(bid, plat="android"):
+    return [{"hashed_id": f"{bid}-1", "name": "testGoldHome: gold", "status": "passed",
+             "duration": 90, "os": plat, "os_version": "14.0", "device": "S24",
+             "project_name": "Owner Project", "app_details": {"app_version": "2.18.0"},
+             "created_at": "2026-08-18T10:00:00.000Z", "build_hashed_id": bid}]
+
+
+def test_projects_to_search_honours_an_explicit_project(monkeypatch):
+    monkeypatch.setattr(ingestor, "_resolve_project_id", lambda name: 42)
+    calls = []
+    monkeypatch.setattr(ingestor, "_get", lambda url, params=None: calls.append(url))
+    assert ingestor._projects_to_search(["P"]) == [("P", 42)]
+    assert calls == []          # no account-wide listing when the project is named
+
+
+def test_projects_to_search_lists_every_project_when_none_given(monkeypatch):
+    monkeypatch.setattr(ingestor, "_get", lambda url, params=None: [
+        {"id": 1, "name": "Finserv - Gopay Android"},
+        {"id": 2, "name": "Finserv - Gopay iOS"},
+    ])
+    assert ingestor._projects_to_search(None) == [
+        ("Finserv - Gopay Android", 1), ("Finserv - Gopay iOS", 2)]
+
+
+def test_build_number_needs_no_project(monkeypatch):
+    """The build identifies its own project, so --project is optional."""
+    def fake_get(url, params=None):
+        if "projects.json" in url:
+            return [{"id": 1, "name": "Finserv - Gopay Android"}]
+        return _BUILD_LIST
+    monkeypatch.setattr(ingestor, "_get", fake_get)
+    monkeypatch.setattr(ingestor, "_fetch_sessions_for_build",
+                        lambda bid: _session_stub(bid))
+    import history
+    monkeypatch.setattr(history, "persist_build", lambda *a, **k: None)
+    df, meta = ingestor.ingest_builds(
+        source="api", project=None, build_names=["174456408"], enrich_logs=False)
+    assert len(df) == 1
+    # The header names the project the build was found in, not a requested one.
+    assert meta["project"] == "Finserv - Gopay Android"
+
+
+def test_project_scan_stops_once_every_name_is_found(monkeypatch):
+    """Scanning must not keep listing projects after the last name resolves."""
+    scanned = []
+
+    def fake_get(url, params=None):
+        if "projects.json" in url:
+            return [{"id": i, "name": f"P{i}"} for i in range(1, 6)]
+        scanned.append(url)
+        return _BUILD_LIST
+    monkeypatch.setattr(ingestor, "_get", fake_get)
+    monkeypatch.setattr(ingestor, "_fetch_sessions_for_build",
+                        lambda bid: _session_stub(bid))
+    import history
+    monkeypatch.setattr(history, "persist_build", lambda *a, **k: None)
+    ingestor.ingest_builds(source="api", project=None,
+                           build_names=["174456408"], enrich_logs=False)
+    assert len(scanned) == 1, f"scanned {len(scanned)} projects, expected to stop at 1"
+
+
+def test_unmatched_name_reports_only_the_projects_actually_searched(monkeypatch):
+    def fake_get(url, params=None):
+        if "projects.json" in url:
+            return [{"id": 1, "name": "OnlyProject"}]
+        return _BUILD_LIST
+    monkeypatch.setattr(ingestor, "_get", fake_get)
+    with pytest.raises(IngestionError) as err:
+        ingestor.ingest_builds(source="api", project=None,
+                               build_names=["definitely_absent"])
+    assert "OnlyProject" in str(err.value)
+    assert "definitely_absent" in str(err.value)

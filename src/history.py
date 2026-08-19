@@ -11,6 +11,7 @@ persisted (the ingestor strips them before this layer ever sees a row).
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -114,20 +115,26 @@ def persist_build(
 
 
 def load_recent_sessions(
-    project: str,
+    project: str | Sequence[str],
     builds_window: int | None = None,
     db_path: str | Path | None = None,
 ) -> pd.DataFrame:
     """Return sessions from the most recent N builds of a project (for flakiness).
 
+    Accepts several projects, or a combined ``"A + B"`` label, because builds are
+    stored per project and a cross-platform run must load all of them.
     Empty frame if the DB has no history yet (e.g. very first run).
     """
     window = builds_window or settings.history_builds_window
+    names = project_names(project)
+    if not names:
+        return pd.DataFrame()
+    project_placeholders = ",".join("?" * len(names))
     with closing(_connect(db_path)) as conn:
         recent_builds = pd.read_sql_query(
-            "SELECT build_id FROM builds WHERE project = ? "
+            f"SELECT build_id FROM builds WHERE project IN ({project_placeholders}) "
             "ORDER BY created_at DESC LIMIT ?",
-            conn, params=(project, window),
+            conn, params=(*names, window),
         )
         if recent_builds.empty:
             return pd.DataFrame()
@@ -141,31 +148,53 @@ def load_recent_sessions(
     return sessions
 
 
+def project_names(project: str | Sequence[str]) -> list[str]:
+    """Split a project argument into the individual project names it refers to.
+
+    A cross-platform run labels itself ``"A + B"``, but builds are stored under
+    their own project. Matching the combined label against ``builds.project``
+    therefore finds nothing real, so it has to be split back apart.
+    """
+    if not isinstance(project, str):
+        return [str(p).strip() for p in project if str(p).strip()]
+    parts = [project]
+    for sep in (" + ", ","):
+        parts = [piece for part in parts for piece in part.split(sep)]
+    return [p.strip() for p in parts if p.strip()]
+
+
 def suite_health_trend(
-    project: str,
+    project: str | Sequence[str],
     builds_window: int | None = None,
     db_path: str | Path | None = None,
 ) -> pd.DataFrame:
-    """Per-build pass rate over time, oldest→newest, for the trend chart."""
+    """Per-build pass rate over time, oldest→newest, for the trend chart.
+
+    Builds with no sessions are excluded: they have no pass rate, and treating
+    one as 0% drew a phantom collapse to zero on the chart.
+    """
     window = builds_window or settings.history_builds_window
+    names = project_names(project)
+    if not names:
+        return pd.DataFrame()
+    placeholders = ",".join("?" * len(names))
     with closing(_connect(db_path)) as conn:
         df = pd.read_sql_query(
-            "SELECT b.build_id, b.name, b.created_at, "
+            "SELECT b.build_id, b.name, b.project, b.created_at, "
             "  COUNT(s.session_id) AS total, "
             "  SUM(s.is_failure)   AS failed "
             "FROM builds b LEFT JOIN sessions s ON s.build_id = b.build_id "
-            "WHERE b.project = ? "
-            "GROUP BY b.build_id ORDER BY b.created_at DESC LIMIT ?",
-            conn, params=(project, window),
+            f"WHERE b.project IN ({placeholders}) "
+            "GROUP BY b.build_id HAVING total > 0 "
+            "ORDER BY b.created_at DESC LIMIT ?",
+            conn, params=(*names, window),
         )
     if df.empty:
         return df
     df = df.iloc[::-1].reset_index(drop=True)  # oldest -> newest
     df["total"] = df["total"].fillna(0).astype(int)
     df["failed"] = df["failed"].fillna(0).astype(int)
-    df["pass_rate"] = (
-        (df["total"] - df["failed"]) / df["total"].where(df["total"] > 0, 1)
-    ).round(3)
+    df["pass_rate"] = ((df["total"] - df["failed"]) / df["total"]).round(3)
     return df
 
 

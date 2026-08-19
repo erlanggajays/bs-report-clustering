@@ -12,13 +12,37 @@ import logging
 import sys
 
 from config import settings
-from ingestor import as_project_list, ingest, ingest_range, IngestionError
+from ingestor import (
+    as_project_list,
+    ingest,
+    ingest_builds,
+    ingest_range,
+    IngestionError,
+)
 from triage_engine import run_triage
 from exec_metrics import compute_exec_metrics
 from report_generator import generate_report
 import history
 
 logger = logging.getLogger("bsanalytics")
+
+
+def _persist_latest(build_meta: dict, df, db_path) -> None:
+    """Persist a latest-mode run, one row per real build.
+
+    A cross-platform run has one build per project. Persisting the combined frame
+    under the synthetic combined id would rewrite every session's build_id — and
+    because session_id is the primary key, it also re-parents rows stored by
+    earlier runs, collapsing the per-build history that the trend chart and
+    cross-build flakiness are computed from.
+    """
+    for meta in build_meta.get("builds") or []:
+        build_id = meta.get("hashed_id") or meta.get("build_id")
+        part = df[df["build_id"] == build_id]
+        if not part.empty:
+            history.persist_build(meta, part, db_path=db_path)
+    if not build_meta.get("builds"):
+        history.persist_build(build_meta, df, db_path=db_path)
 
 
 def project_label(build_meta: dict, args) -> str:
@@ -60,6 +84,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=settings.default_last_n,
         help="Number of recent builds to analyze in --mode range.",
     )
+    parser.add_argument(
+        "--build",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="Analyze specific builds by name, e.g. --build "
+             "'gopay_consumer_app_android_tests - 174456408'. Repeat per platform. "
+             "The trailing run number alone is enough if it is unambiguous. "
+             "--project is optional here: without it every project is searched for "
+             "the name, and the owning project is read off the build. Overrides "
+             "--mode/--last, and requires --source api. Use this to compare "
+             "platforms on equivalent builds when their newest runs differ in scope.",
+    )
     parser.add_argument("--mock-path", default=None)
     parser.add_argument("--output", default=None)
     parser.add_argument(
@@ -80,6 +117,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _configure_logging(args.verbose)
+    # Whether --project was actually passed, kept before normalisation: with
+    # --build, omitting it means "search every project", which is not the same as
+    # falling back to the TARGET_PROJECT default that as_project_list() applies.
+    explicit_projects = args.project
     # Normalise --project (repeatable and/or comma-separated) into a list.
     args.project = as_project_list(args.project)
 
@@ -89,7 +130,26 @@ def main(argv: list[str] | None = None) -> int:
     db_path = settings.history_db_for(args.source)
 
     try:
-        if args.mode == "range":
+        if args.build:
+            logger.info(
+                "[1/4] Ingesting %d named build(s) from %s…",
+                len(args.build),
+                f"project '{' + '.join(args.project)}'" if explicit_projects
+                else "all visible projects",
+            )
+            df, build_meta = ingest_builds(
+                args.user, source=args.source, project=explicit_projects,
+                build_names=args.build, enrich_logs=enrich,
+            )
+            logger.info(
+                "      %d builds (%s → %s)",
+                build_meta["n_builds"], build_meta["date_from"], build_meta["date_to"],
+            )
+            logger.info("      %d sessions · %d failures", len(df), int(df["is_failure"].sum()))
+            # Each build was persisted individually inside ingest_builds, and the
+            # combined frame is the flakiness history for this window.
+            hist = df
+        elif args.mode == "range":
             logger.info(
                 "[1/4] Ingesting last %d builds for project '%s' (source=%s)…",
                 args.last, " + ".join(args.project), args.source,
@@ -119,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
                 build_meta.get("status", "n/a"),
             )
             logger.info("      %d sessions · %d failures", len(df), int(df["is_failure"].sum()))
-            history.persist_build(build_meta, df, db_path=db_path)
+            _persist_latest(build_meta, df, db_path)
             hist = history.load_recent_sessions(project_label(build_meta, args), db_path=db_path)
             if hist is not None and not hist.empty:
                 logger.info("      history: %d builds available", hist["build_id"].nunique())

@@ -376,7 +376,9 @@ def _trend_chart(trend: pd.DataFrame | None) -> str:
             line=dict(color="#2563eb", width=2),
             fill="tozeroy",
             fillcolor="rgba(37,99,235,0.08)",
-            hovertemplate="build %{x}<br>pass rate: %{y}%<extra></extra>",
+            # No literal "%" here: Plotly already applies the y-axis ticksuffix to
+            # hover values, and adding one produced "73.7%%".
+            hovertemplate="build %{x}<br>pass rate: %{y}<extra></extra>",
         )
     )
     fig.update_layout(
